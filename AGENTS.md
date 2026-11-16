@@ -1,6 +1,6 @@
 # Drop
 
-A Mac app that installs an app straight out of a `.dmg` without mounting it, and offers to when a new DMG lands in Downloads. Plan and decisions: `../plans/drop.md`. Design: [Drop design canvas](https://claude.ai/artifact/CEdSxX9BX5hCrDkJPLgKts). Research, benchmarks and the sample DMGs: `.claude/` (gitignored).
+A Mac app that installs an app straight out of a `.dmg` without mounting it, and offers to when a new DMG lands in Downloads. GPL-3.0. Plan, decisions and the design canvas link live in the Nidus Labs workspace (`plans/drop.md`), not in this repo. Research, benchmarks and the sample DMGs: `.claude/` (gitignored).
 
 ## Layout
 
