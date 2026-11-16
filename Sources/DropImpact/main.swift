@@ -12,6 +12,9 @@ import Installer
 //   drop-impact cpu <seconds>                 hash 64 MB buffers on one thread per P-core
 //   drop-impact disk <file> <seconds>         read <file> uncached in 1 MB blocks
 //   drop-impact make-file <file> <GiB>        write the uncached test file once
+//   drop-impact make-tree <dir> <GiB>         write random 2-8 MB files uncached (copy workload)
+//   drop-impact evict <path>...               drop these files' pages from the page cache
+//   drop-impact read-tree <dir>               read every file under <dir> once, timed
 //   drop-impact stage <policy> <dest> [--boost-after <s>] [--cached | --uncached] [--rate <MB/s>]
 //                     [--no-reissue] [--cache-mb <MiB>] <dmg>...
 //
@@ -138,6 +141,109 @@ func makeFile(path: String, gib: Int) {
         guard write(fd, buffer, block) == block else { fail("write: \(errno)") }
     }
     emit(["kind": "make-file", "path": path, "bytes": gib << 30])
+}
+
+/// Smallest and largest file `make-tree` writes: "a folder of medium files", like photos.
+let treeFileMinBytes = 2 << 20
+let treeFileMaxBytes = 8 << 20
+
+/// Writes random files of `treeFileMinBytes`–`treeFileMaxBytes` under `dir` with
+/// `F_NOCACHE`, so the copy workload's source starts out of the page cache.
+func makeTree(dir: String, gib: Int) {
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let buffer = UnsafeMutableRawPointer.allocate(byteCount: treeFileMaxBytes, alignment: Int(getpagesize()))
+    defer { buffer.deallocate() }
+    var total = 0
+    var index = 0
+    while total < gib << 30 {
+        let size = treeFileMinBytes + Int(arc4random_uniform(UInt32(treeFileMaxBytes - treeFileMinBytes)))
+        arc4random_buf(buffer, size)
+        let path = "\(dir)/\(index / 100)/file-\(index).bin"
+        if index % 100 == 0 {
+            try? FileManager.default.createDirectory(
+                atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        }
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        guard fd >= 0 else { fail("create \(path): \(errno)") }
+        _ = fcntl(fd, F_NOCACHE, 1)
+        guard write(fd, buffer, size) == size else { fail("write: \(errno)") }
+        close(fd)
+        total += size
+        index += 1
+    }
+    emit(["kind": "make-tree", "files": index, "bytes": total])
+}
+
+/// Every regular file under each path (or the path itself), not following symlinks.
+func regularFiles(_ paths: [String]) -> [String] {
+    var files: [String] = []
+    for root in paths {
+        var info = stat()
+        guard lstat(root, &info) == 0 else { continue }
+        if info.st_mode & S_IFMT == S_IFREG {
+            files.append(root)
+            continue
+        }
+        guard let walker = FileManager.default.enumerator(atPath: root) else { continue }
+        for case let relative as String in walker {
+            let path = "\(root)/\(relative)"
+            if lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG { files.append(path) }
+        }
+    }
+    return files
+}
+
+/// Evicts each file's pages from the unified buffer cache (`msync` with `MS_INVALIDATE`
+/// on a shared read-only mapping, as `vmtouch -e` does) and reports how many bytes were
+/// resident before and after (`mincore`). Touches only these files, unlike `purge`.
+func evict(_ paths: [String]) {
+    let page = Int(getpagesize())
+    var before = 0
+    var after = 0
+    var bytes = 0
+    for path in regularFiles(paths) {
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { continue }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_size > 0 else { continue }
+        let length = Int(info.st_size)
+        guard let map = mmap(nil, length, PROT_READ, MAP_SHARED, fd, 0), map != MAP_FAILED else { continue }
+        defer { munmap(map, length) }
+        var vector = [CChar](repeating: 0, count: (length + page - 1) / page)
+        func resident() -> Int {
+            guard mincore(map, length, &vector) == 0 else { return 0 }
+            return vector.reduce(0) { $0 + ($1 & 1 != 0 ? page : 0) }
+        }
+        before += resident()
+        msync(map, length, MS_INVALIDATE)
+        after += resident()
+        bytes += length
+    }
+    emit(["kind": "evict", "bytes": bytes, "residentBefore": before, "residentAfter": after])
+}
+
+/// Bytes per read in `read-tree`.
+let treeReadBlock = 1 << 20
+
+/// Opens and reads every file under `dir` once, like a search or an indexer would.
+func readTree(dir: String) {
+    let start = now()
+    let files = regularFiles([dir])
+    let buffer = UnsafeMutableRawPointer.allocate(byteCount: treeReadBlock, alignment: Int(getpagesize()))
+    defer { buffer.deallocate() }
+    var bytes = 0
+    for path in files {
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { continue }
+        while true {
+            let got = read(fd, buffer, treeReadBlock)
+            if got <= 0 { break }
+            bytes += got
+        }
+        close(fd)
+    }
+    emit(["kind": "read-tree", "files": files.count, "bytes": bytes, "seconds": now() - start])
 }
 
 /// Drop's own usage so far: CPU split by QoS, lifetime peak footprint, disk bytes.
@@ -290,6 +396,15 @@ case "disk":
 case "make-file":
     guard arguments.count == 3, let gib = Int(arguments[2]), gib > 0 else { fail("make-file <file> <GiB>") }
     makeFile(path: arguments[1], gib: gib)
+case "make-tree":
+    guard arguments.count == 3, let gib = Int(arguments[2]), gib > 0 else { fail("make-tree <dir> <GiB>") }
+    makeTree(dir: arguments[1], gib: gib)
+case "evict":
+    guard arguments.count >= 2 else { fail("evict <path>...") }
+    evict(Array(arguments.dropFirst()))
+case "read-tree":
+    guard arguments.count == 2 else { fail("read-tree <dir>") }
+    readTree(dir: arguments[1])
 case "stage":
     guard arguments.count >= 4 else { fail("stage <policy> <dest> [--boost-after s] <dmg>...") }
     var rest = Array(arguments.dropFirst(3))
