@@ -54,7 +54,8 @@ struct Scratch {
         destination = root.appending(path: "Applications")
         trash = root.appending(path: "Trash")
         mountRoot = testMountRoot.appending(path: root.lastPathComponent, directoryHint: .isDirectory)
-        for folder in [destination, trash] {
+        // `HiddenMount` makes `mountRoot` itself but not its parent, which a fresh machine lacks.
+        for folder in [destination, trash, testMountRoot] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
     }

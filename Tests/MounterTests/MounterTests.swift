@@ -33,6 +33,15 @@ enum MountFixtures {
     static var leftovers: [(device: String, mountPoint: String)] {
         HiddenMount.attachedImages(mountedUnder: mountRoot)
     }
+
+    /// The image copied into `folder`, for a suite that runs alongside `HiddenMountTests`.
+    /// One image file attaches as one device however often it is asked for, so two suites
+    /// sharing the fixture would share, and detach, each other's mount.
+    static func copy(_ name: String, in folder: URL) throws -> URL {
+        let copy = folder.appending(path: name)
+        try FileManager.default.copyItem(at: try image(name), to: copy)
+        return copy
+    }
 }
 
 /// A scratch folder under `.build/` for staged copies.
@@ -213,8 +222,10 @@ struct MountedFileSystemTests {
     /// decmpfs files on the mount read back decompressed through the kernel: staged as
     /// plain files with identical bytes, no `com.apple.decmpfs`, not compressed on disk.
     @Test func compressedAppStagesUncompressedAndIdentical() throws {
+        let images = try scratchFolder("compressed-image")
+        defer { Extractor.removeTree(images.path) }
         let mount = try HiddenMount.attach(
-            try MountFixtures.image("compressed.dmg"), root: MountFixtures.readerMountRoot)
+            try MountFixtures.copy("compressed.dmg", in: images), root: MountFixtures.readerMountRoot)
         defer { try? mount.detach() }
         let fileSystem = try mount.fileSystem()
         let app = try #require(try fileSystem.children(of: fileSystem.root).first { $0.name == "Tiny.app" })
@@ -244,8 +255,10 @@ struct MountedFileSystemTests {
     }
 
     @Test func symlinksAreReportedNotFollowed() throws {
+        let images = try scratchFolder("encrypted-image")
+        defer { Extractor.removeTree(images.path) }
         let mount = try HiddenMount.attach(
-            try MountFixtures.image("encrypted.dmg"), password: MountPassword(MountFixtures.password),
+            try MountFixtures.copy("encrypted.dmg", in: images), password: MountPassword(MountFixtures.password),
             root: MountFixtures.readerMountRoot)
         defer { try? mount.detach() }
         let fileSystem = try mount.fileSystem()
