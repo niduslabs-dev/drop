@@ -17,21 +17,49 @@ struct SettingsView: View {
 
     @State private var showsRecent = false
     @Environment(\.settingsOpensRecent) private var opensRecent
+    @Environment(\.titleBarHeight) private var titleBarHeight
+    @Environment(\.settingsSizing) private var sizing
     @State private var showsSkipInfo = false
-    @State private var contentHeight: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition(edge: .top)
+    @Environment(\.settingsDemoOffset) private var demoOffset
 
+    /// The scroll view fills the window below the title bar, and the window controller
+    /// sizes the window to the page (`SettingsSizing`), so the page's own insets are the
+    /// only space around it. It bounces at both ends even when everything
+    /// fits, like a native settings pane, and rows scrolled up under the title bar fade out
+    /// before they reach the traffic lights.
     var body: some View {
         ScrollView {
-            page.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
+            page.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                sizing?.contentHeightChanged(titleBarHeight + $0)
+            }
         }
-        .scrollBounceBehavior(.basedOnSize)
+        .scrollPosition($scrollPosition)
+        .onChange(of: demoOffset, initial: true) { if let demoOffset { scrollPosition.scrollTo(y: demoOffset) } }
+        .scrollBounceBehavior(.always, axes: .vertical)
         .scrollIndicators(.automatic)
-        .frame(width: Theme.Settings.width, height: min(max(contentHeight, 1), Theme.Settings.maxHeight))
-        .ignoresSafeArea()
+        .mask { scrollEdgeMask }
+        .frame(width: Theme.Settings.width)
+        .frame(maxHeight: .infinity)
+        .padding(.top, titleBarHeight)
         .background(SurfaceBackground(kind: .settings).ignoresSafeArea())
         .foregroundStyle(Theme.Colour.bodyText)
         .sheet(isPresented: $showsRecent) { RecentSheet(recent: recent) { showsRecent = false } }
         .onChange(of: opensRecent, initial: true) { if opensRecent { showsRecent = true } }
+    }
+
+    /// The scroll-edge effect. The scroll view starts below the title bar and clips there,
+    /// so no row can reach the traffic lights; over its first `scrollEdgeFade` points rows
+    /// fade out instead of being cut off. A mask, not a band painted on top, so what shows
+    /// through is the window's own backdrop: a second ink glass or window colour over the
+    /// first would read as a darker band (titleBarMatchesContent). At rest the fade ends at
+    /// the page title, so nothing is faded.
+    private var scrollEdgeMask: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: Theme.Settings.scrollEdgeFade)
+            Color.black
+        }
     }
 
     private var page: some View {
@@ -77,8 +105,8 @@ struct SettingsView: View {
                 }
             }
         }
-        .padding(.top, Theme.Settings.titleTop)
-        .padding([.horizontal, .bottom], Theme.Space.xl)
+        .padding(.top, Theme.Settings.titleBarGap)
+        .padding([.horizontal, .bottom], Theme.Settings.inset)
         .frame(width: Theme.Settings.width, alignment: .leading)
     }
 
@@ -149,6 +177,21 @@ struct SettingsView: View {
 extension EnvironmentValues {
     /// Opens the Recent sheet as Settings appears (the demo's settings-recent state).
     @Entry var settingsOpensRecent = false
+    /// Debug: scrolls the Settings page to this offset (`demoScroll`).
+    @Entry var settingsDemoOffset: CGFloat?
+    /// Where the Settings page reports its height (`SettingsSizing`).
+    @Entry var settingsSizing: SettingsSizing?
+}
+
+/// Takes the Settings window's full content height (title bar, then the page with its gap
+/// and insets) to the window controller, which sizes the window to it up to
+/// `Theme.Settings.maxHeight`. A class, not a closure, in the environment: SwiftUI compares
+/// it by identity, so it doesn't invalidate the page on every update.
+@MainActor
+final class SettingsSizing {
+    let contentHeightChanged: (CGFloat) -> Void
+
+    init(contentHeightChanged: @escaping (CGFloat) -> Void) { self.contentHeightChanged = contentHeightChanged }
 }
 
 /// A row that opens something (a sheet, a picker): title left, value and chevron right,
@@ -238,12 +281,24 @@ struct RecentSheet: View {
 
 /// The Settings window. While it's open Drop has a Dock icon and is in Command-Tab
 /// (`ActivationPolicy`).
+///
+/// The window is as tall as the page, up to `Theme.Settings.maxHeight`, past which the page
+/// scrolls. SwiftUI reports the page's height and this controller sets the frame, rather
+/// than the hosting controller's preferred size: that path counted the title bar's safe
+/// area on top of a page that already leaves room for it, which left a gap under the last
+/// card.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    private var hosting: NSHostingView<AnyView>?
     private let makeView: () -> AnyView
     /// Runs before each show, to refresh values that live outside Drop.
     private let onShow: () -> Void
+    /// The content height last reported (title bar and page), 0 until the page has laid out.
+    private var contentHeight: CGFloat = 0
+    /// Set by `show()` until the window has its size: it's centred and brought forward then.
+    private var presentPending = false
+    private lazy var sizing = SettingsSizing { [weak self] height in self?.contentHeightChanged(height) }
 
     init(makeView: @escaping () -> AnyView, onShow: @escaping () -> Void = {}) {
         self.makeView = makeView
@@ -258,35 +313,106 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         onShow()
-        if window == nil {
-            let controller = NSHostingController(rootView: makeView())
-            controller.sizingOptions = [.preferredContentSize]
-            let window = NSWindow(contentViewController: controller)
-            window.title = "Settings"
-            window.titleVisibility = .hidden
-            window.styleMask = [.titled, .closable, .fullSizeContentView]
-            window.paintsSurfaceUnderTitleBar()
-            window.standardWindowButton(.zoomButton)?.isHidden = true
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            window.isMovableByWindowBackground = true
-            window.isReleasedWhenClosed = false
-            window.delegate = self
-            self.window = window
-        } else if let controller = window?.contentViewController as? NSHostingController<AnyView> {
-            controller.rootView = makeView()
-        }
-        guard let window else { return }
-        window.layoutIfNeeded()
-        Self.centre(window)
-        ActivationPolicy.opened(.settings)
-        WindowPresence.present(window)
+        let window = self.window ?? makeWindow()
+        hosting?.rootView = root(makeView())
+        presentPending = true
+        hosting?.layoutSubtreeIfNeeded()
+        // A reopen with the page unchanged reports no new height: use the last one.
+        if contentHeight > 0 { resize(window, to: contentHeight) }
     }
 
     /// Shows the Recent sheet, for screenshots of it.
     func presentRecent() {
-        guard let controller = window?.contentViewController as? NSHostingController<AnyView> else { return }
-        controller.rootView = AnyView(makeView().environment(\.settingsOpensRecent, true))
+        hosting?.rootView = root(AnyView(makeView().environment(\.settingsOpensRecent, true)))
     }
+
+    private func makeWindow() -> NSWindow {
+        let styleMask: NSWindow.StyleMask = [.titled, .closable, .fullSizeContentView]
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: Theme.Settings.width, height: Theme.Settings.maxHeight),
+            styleMask: styleMask, backing: .buffered, defer: false)
+        window.title = "Settings"
+        window.titleVisibility = .hidden
+        window.paintsSurfaceUnderTitleBar()
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        // No saved frame or restored state: Settings always opens centred (`centre`).
+        window.isRestorable = false
+        window.setFrameAutosaveName("")
+        window.delegate = self
+        let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+        hosting.sizingOptions = []
+        // The page places itself below the title bar (`titleBarHeight`), so SwiftUI gets no
+        // safe area of its own to inset by.
+        hosting.safeAreaRegions = []
+        window.contentView = hosting
+        self.window = window
+        self.hosting = hosting
+        return window
+    }
+
+    /// `view` with the window's real title bar height and the height callback.
+    private func root(_ view: AnyView) -> AnyView {
+        guard let window else { return view }
+        let titleBarHeight = window.frame.height - window.contentLayoutRect.height
+        return AnyView(
+            view
+                .environment(\.titleBarHeight, titleBarHeight)
+                .environment(\.settingsSizing, sizing))
+    }
+
+    private func contentHeightChanged(_ height: CGFloat) {
+        guard height > 0, let window else { return }
+        contentHeight = height
+        resize(window, to: height)
+    }
+
+    /// Sizes the window to the page, up to the maximum, then centres it: the size has to
+    /// be known first, since a later resize keeps the old origin and leaves the window off
+    /// centre (the bug this replaced). Every resize re-centres, so a height change from
+    /// Recent can't push it off either. The first size after `show()` also brings it forward.
+    private func resize(_ window: NSWindow, to height: CGFloat) {
+        let size = NSSize(width: Theme.Settings.width, height: min(height, Theme.Settings.maxHeight))
+        guard presentPending || window.frame.size != size else { return }
+        window.setFrame(NSRect(origin: window.frame.origin, size: size), display: !presentPending)
+        Self.centre(window)
+        if presentPending {
+            presentPending = false
+            ActivationPolicy.opened(.settings)
+            WindowPresence.present(window)
+        }
+    }
+
+    #if DEBUG
+        /// Where `--demo settings-…` scrolls the page to for screenshots.
+        enum DemoScroll {
+            /// Halfway down (the top, when the page fits).
+            case middle
+            /// Scrolled to the end, to measure the inset under the last card.
+            case bottom
+        }
+
+        /// Scrolls the page to `position` without moving the pointer, so a background test
+        /// can capture scrolled states. It goes through SwiftUI's own scroll position
+        /// (`settingsDemoOffset`), the path a real scroll takes, so the clip and the edge
+        /// fade are what a user sees.
+        func demoScroll(_ position: DemoScroll) {
+            let range = max(contentHeight - Theme.Settings.maxHeight, 0)
+            let offset = position == .middle ? range / 2 : range
+            hosting?.rootView = root(AnyView(makeView().environment(\.settingsDemoOffset, offset)))
+        }
+
+        /// The title bar height the page is laid out below, for the measuring scripts.
+        var titleBarHeight: CGFloat { window.map { $0.frame.height - $0.contentLayoutRect.height } ?? 0 }
+
+        /// Closes and reopens the window, for checking where a reopen lands.
+        func demoReopen() {
+            window?.close()
+            show()
+        }
+    #endif
 
     /// Centres `window` in the visible frame of the active screen, every time it opens:
     /// the screen with the key window, else the one whose menu bar is active

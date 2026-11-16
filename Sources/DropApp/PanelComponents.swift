@@ -10,7 +10,8 @@ enum PanelPresentation {
 
 extension EnvironmentValues {
     @Entry var panelPresentation = PanelPresentation.popup
-    /// The centred window's title bar height, read from the window.
+    /// The window's title bar height, read from the window (the centred install window,
+    /// Settings).
     @Entry var titleBarHeight: CGFloat = 0
     /// Cards at the popup's 400 pt scale (radius 10, padding 12) or window scale (radius 14,
     /// padding 12 × 16), per the guide's InfoCard.

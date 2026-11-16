@@ -12,7 +12,9 @@
     ///
     /// States: reading, main, preparing, waiting, installing, done, update, update-running,
     /// warning, unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
-    /// password-wrong, settings, settings-recent (its Recent sheet open), done-long (a
+    /// password-wrong, settings, settings-recent (its Recent sheet open),
+    /// settings-mid and settings-bottom (the page scrolled there), settings-reopen
+    /// (closed and opened again), done-long (a
     /// 30-character app name), window (the install window an opened image gets) and its
     /// states window-licence, window-licence-one, window-installing, window-done,
     /// window-warning, window-refused and window-update, and onboarding
@@ -23,7 +25,8 @@
         static let states = [
             "reading", "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning",
             "unsigned", "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
-            "progress-30", "progress-62", "settings", "settings-recent", "done-long", "window", "window-licence",
+            "progress-30", "progress-62", "settings", "settings-recent", "settings-mid",
+            "settings-bottom", "settings-reopen", "done-long", "window", "window-licence",
             "window-licence-one",
             "window-installing", "window-progress-30", "window-progress-62", "window-done", "window-warning",
             "window-refused", "window-update", "onboarding-1",
@@ -54,6 +57,22 @@
                             date: .now.addingTimeInterval(-age)))
                 }
                 app.settings.show()
+                let scroll: SettingsWindowController.DemoScroll? =
+                    switch state {
+                    case "settings-mid": .middle
+                    case "settings-bottom": .bottom
+                    default: nil
+                    }
+                if scroll != nil || state == "settings-reopen" {
+                    Task {
+                        try? await Task.sleep(for: settle)
+                        if let scroll { app.settings.demoScroll(scroll) } else { app.settings.demoReopen() }
+                        try? await Task.sleep(for: redraw)
+                        print("DEMO_TITLEBAR \(app.settings.titleBarHeight)")
+                        report(app.settings.windowNumber ?? 0)
+                    }
+                    return
+                }
                 if state == "settings-recent" {
                     Task {
                         app.settings.presentRecent()
@@ -62,6 +81,7 @@
                     }
                     return
                 }
+                print("DEMO_TITLEBAR \(app.settings.titleBarHeight)")
                 report(app.settings.windowNumber ?? 0)
                 return
             }
@@ -104,6 +124,9 @@
 
         /// Long enough for the popup's spring and the staged reveals to finish.
         private static let settle: Duration = .milliseconds(2600)
+
+        /// Long enough for a scrolled or reopened window to draw before it's captured.
+        private static let redraw: Duration = .milliseconds(400)
 
         /// Demo onboarding never reads or writes the test domain's state.
         private static let demoSuite = "dev.niduslabs.drop.demo"

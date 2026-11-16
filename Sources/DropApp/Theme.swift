@@ -223,8 +223,16 @@ enum Theme {
         static let width: CGFloat = 560
         /// Taller content scrolls inside the window.
         static let maxHeight: CGFloat = 720
-        /// From the window's top edge to the page title, clear of the traffic lights.
-        static let titleTop: CGFloat = 40
+        /// Left, right and bottom of the page: the last card ends this far above the
+        /// window's bottom edge, as the cards sit this far in from the sides.
+        static let inset: CGFloat = Space.xl
+        /// From the title bar's bottom (read from the window) to the page title, as the
+        /// board draws it: 28 + 12 on today's title bar.
+        static let titleBarGap: CGFloat = Space.m
+        /// How far the scroll-edge fade runs below the title bar: rows scrolled up under it
+        /// fade out over this distance and are gone under the traffic lights. Equal to
+        /// `titleBarGap`, so at rest the fade ends exactly at the title.
+        static let scrollEdgeFade: CGFloat = titleBarGap
         static let titleToGroups: CGFloat = Space.xxl
         static let groupSpacing: CGFloat = Space.l
         static let labelToCard: CGFloat = Space.xs
