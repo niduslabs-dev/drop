@@ -2,6 +2,7 @@
     import AppKit
     import DiskImage
     import Installer
+    import Onboarding
     import SwiftUI
     import Verifier
 
@@ -11,13 +12,16 @@
     ///
     /// States: main, preparing, waiting, installing, done, update, update-running, warning,
     /// unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
-    /// password-wrong, settings, menu, done-long (a 30-character app name).
+    /// password-wrong, settings, menu, done-long (a 30-character app name), and onboarding
+    /// pages onboarding-1 to onboarding-5 and onboarding-2-denied (fakes, so no request
+    /// reaches macOS; closing the window quits).
     @MainActor
     enum Demo {
         static let states = [
             "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning", "unsigned",
             "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
-            "settings", "menu", "done-long",
+            "settings", "menu", "done-long", "onboarding-1", "onboarding-2", "onboarding-2-denied", "onboarding-3",
+            "onboarding-4", "onboarding-5",
         ]
 
         private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
@@ -31,6 +35,10 @@
         }
 
         static func run(_ state: String, app: AppDelegate) {
+            if state.hasPrefix("onboarding-") {
+                runOnboarding(state, app: app)
+                return
+            }
             if state == "settings" {
                 for (name, version, age) in [("Fieldnote", "5.0", 86_400.0), ("Linea", "2.4.1", 120.0)] {
                     app.store.addRecent(
@@ -77,6 +85,34 @@
                 report(app.panel.windowNumber)
             }
         }
+
+        /// An onboarding page on its own defaults domain with fakes for every request.
+        private static func runOnboarding(_ state: String, app: AppDelegate) {
+            let parts = state.split(separator: "-")
+            guard parts.count >= 2, let number = Int(parts[1]), let page = OnboardingPage(rawValue: number) else {
+                return
+            }
+            let defaults = UserDefaults(suiteName: demoSuite) ?? .standard
+            OnboardingCoordinator.reset(in: defaults)
+            let coordinator = OnboardingCoordinator(
+                defaults: defaults, folderAccess: DeniedFolderAccess(), defaultHandler: TestDefaultHandler(),
+                loginItem: TestLoginItem())
+            coordinator.onEnd = { NSApp.terminate(nil) }
+            app.showOnboarding(coordinator)
+            Task {
+                if state.hasSuffix("-denied") {
+                    coordinator.preview(.downloads)
+                    await coordinator.allowFolder(URL(filePath: "/Users/Shared/Downloads"))
+                } else {
+                    coordinator.preview(page)
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+                report(app.onboardingWindow?.windowNumber ?? 0)
+            }
+        }
+
+        /// Demo onboarding never reads or writes the test domain's state.
+        private static let demoSuite = "dev.niduslabs.drop.demo"
 
         private static func report(_ window: Int) {
             print("DEMO_WINDOW \(window)")

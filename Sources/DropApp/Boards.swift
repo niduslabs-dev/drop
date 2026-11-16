@@ -238,10 +238,7 @@ struct StepRow: View {
             .frame(width: Theme.Card.rowIcon, height: Theme.Card.rowIcon)
             Text(title)
                 .fontWeight(step == .current ? .semibold : .regular)
-                .foregroundStyle(
-                    step == .pending
-                        ? Theme.Colour.tertiaryText : step == .done ? Theme.Colour.secondaryText : Theme.Colour.bodyText
-                )
+                .foregroundStyle(step == .current ? Theme.Colour.bodyText : Theme.Colour.secondaryText)
         }
         .accessibilityElement(children: .combine)
     }

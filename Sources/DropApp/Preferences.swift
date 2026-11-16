@@ -44,7 +44,6 @@ final class Preferences {
         static let skipFirstOpenPrompt = "skipFirstOpenPrompt"
         static let openAtLogin = "openAtLogin"
         static let keepInMenuBar = "keepInMenuBar"
-        static let launchedBefore = "launchedBefore"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -59,6 +58,7 @@ final class Preferences {
     var skipFirstOpenPrompt: Bool {
         didSet { defaults.set(skipFirstOpenPrompt, forKey: Key.skipFirstOpenPrompt) }
     }
+    /// "Open Drop at login". Off until the user opts in, on onboarding's login page or here.
     var openAtLogin: Bool { didSet { defaults.set(openAtLogin, forKey: Key.openAtLogin) } }
     var keepInMenuBar: Bool { didSet { defaults.set(keepInMenuBar, forKey: Key.keepInMenuBar) } }
 
@@ -66,14 +66,11 @@ final class Preferences {
     /// can change in Finder, so Settings re-reads it (`DiskImageHandler.isDropDefault`).
     var opensDiskImages = false
 
-    /// False only on the very first launch, when Drop turns the login item on by default.
-    let launchedBefore: Bool
-
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
             Key.askOnNewImage: true, Key.trashImage: true, Key.openAfterInstall: false,
-            Key.skipFirstOpenPrompt: false, Key.openAtLogin: true, Key.keepInMenuBar: false,
+            Key.skipFirstOpenPrompt: false, Key.openAtLogin: false, Key.keepInMenuBar: false,
         ])
         askOnNewImage = defaults.bool(forKey: Key.askOnNewImage)
         let downloads =
@@ -87,8 +84,6 @@ final class Preferences {
         skipFirstOpenPrompt = defaults.bool(forKey: Key.skipFirstOpenPrompt)
         openAtLogin = defaults.bool(forKey: Key.openAtLogin)
         keepInMenuBar = defaults.bool(forKey: Key.keepInMenuBar)
-        launchedBefore = defaults.bool(forKey: Key.launchedBefore)
-        defaults.set(true, forKey: Key.launchedBefore)
     }
 }
 

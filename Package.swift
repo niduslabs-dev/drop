@@ -19,6 +19,8 @@ import PackageDescription
 ///   read-only and invisibly at a private mount point and reads the volume as a `FileSystem`.
 /// - `Installer`: the pipeline the app drives: one `InstallSession` per DMG, from reading
 ///   through the licence, background staging and the check to the final rename.
+/// - `Onboarding`: first-launch onboarding's state machine, apart from the app so its
+///   rules are tested with fake folder access, default handler and login item.
 /// - `DropApp`: the menu bar app: Downloads watcher, the install panel, Settings.
 let package = Package(
     name: "Drop",
@@ -48,11 +50,12 @@ let package = Package(
             linkerSettings: [.linkedFramework("Security")]
         ),
         .target(name: "Installer", dependencies: ["DMGReader", "DiskImage", "Extractor", "Mounter", "Verifier"]),
+        .target(name: "Onboarding"),
         .executableTarget(name: "DMGInspect", dependencies: ["DMGReader", "Extractor", "Verifier"]),
         .executableTarget(name: "DropImpact", dependencies: ["Installer", "DiskImage", "Extractor"]),
         .executableTarget(
             name: "DropApp",
-            dependencies: ["Installer", "DiskImage", "Extractor", "Mounter", "Verifier"],
+            dependencies: ["Installer", "DiskImage", "Extractor", "Mounter", "Verifier", "Onboarding"],
             linkerSettings: [
                 .linkedFramework("AppKit"), .linkedFramework("SwiftUI"), .linkedFramework("ServiceManagement"),
             ]
@@ -68,5 +71,6 @@ let package = Package(
         .testTarget(
             name: "InstallerTests",
             dependencies: ["Installer", "DMGReader", "DiskImage", "Extractor", "Mounter", "Verifier"]),
+        .testTarget(name: "OnboardingTests", dependencies: ["Onboarding"]),
     ]
 )

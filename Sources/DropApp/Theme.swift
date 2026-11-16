@@ -5,10 +5,15 @@ import SwiftUI
 /// Colours are system colours so light and dark mode and the user's accent follow macOS;
 /// only the layout numbers are fixed, and they live here rather than in the views.
 enum Theme {
+    /// The install panel's content inset, the same on all four sides (every panel board).
+    static let panelInset: CGFloat = 18
+    /// The onboarding window's content inset on the left, right and bottom (boards
+    /// Onboarding1 to Onboarding5); the top is the title bar band.
+    static let onboardingInset: CGFloat = 24
+
     /// The panel card (boards 1-3, Update, Warning, Fallback, Password, Licence).
     enum Panel {
         static let width: CGFloat = 400
-        static let padding: CGFloat = 18
         static let spacing: CGFloat = 16
         /// The Licence board packs its taller content a little closer.
         static let licenceSpacing: CGFloat = 14
@@ -117,6 +122,113 @@ enum Theme {
         static let rowSpacing: CGFloat = 10
     }
 
+    /// The onboarding window (boards Onboarding1 to Onboarding5).
+    enum Onboarding {
+        static let width: CGFloat = 600
+        static let height: CGFloat = 480
+        /// The boards' title bar band; never less than the real title bar, which is read.
+        static let titleBand: CGFloat = 44
+        static let artHeight: CGFloat = 190
+        static let artCornerRadius: CGFloat = 12
+        static let textTopPadding: CGFloat = 22
+        static let textHorizontalPadding: CGFloat = 48
+        static let textSpacing: CGFloat = 8
+        static let bodyMaxWidth: CGFloat = 420
+        /// Line height 1.5 on 13 pt: 19.5 pt less the font's own 16 pt line (measured), split
+        /// between lines and, halved, above and below the paragraph as CSS does.
+        static let bodyLineSpacing: CGFloat = 3.5
+        /// The info line sits a little further below the body than the body below the title.
+        static let infoTopPadding: CGFloat = 6
+        static let infoIconSpacing: CGFloat = 6
+        static let bylineTopPadding: CGFloat = 10
+        static let footerSpacing: CGFloat = 12
+        static let linkPadding: CGFloat = 6
+        static let dot: CGFloat = 6
+        static let activeDotWidth: CGFloat = 18
+        static let dotSpacing: CGFloat = 6
+        /// `#D1D1D6` dots and placeholder bars: primary at this opacity in both modes.
+        static let mutedOpacity: Double = 0.18
+        /// `#E5E5EA` tiles and the off switch.
+        static let faintOpacity: Double = 0.1
+        static let hairlineOpacity: Double = 0.08
+        static let rowDividerOpacity: Double = 0.06
+        static let shadowOpacity: Double = 0.1
+        static let shadowRadius: CGFloat = 9
+        static let shadowY: CGFloat = 6
+
+        static let titleFont = SwiftUI.Font.system(size: 22, weight: .bold)
+        /// -0.01em of 22 pt.
+        static let titleTracking: CGFloat = -0.22
+        static let infoFont = SwiftUI.Font.system(size: 11)
+        /// Board 5's byline: 12 pt, secondary label colour, so it stays readable (4.5:1).
+        static let bylineFont = SwiftUI.Font.system(size: 12)
+        static let infoIcon: CGFloat = 12
+        static let linkFont = SwiftUI.Font.system(size: 12)
+
+        /// The drawings, in the boards' SVG units (1 unit = 1 pt).
+        enum Art {
+            /// Board 1: disk image, arrow, Applications folder.
+            static let diskImage: CGFloat = 72
+            static let glyphStroke: CGFloat = 2
+            static let largeDiskImage: CGFloat = 88
+            static let arrowWidth: CGFloat = 48
+            static let arrowHeight: CGFloat = 20
+            static let arrowStroke: CGFloat = 2.6
+            static let rowSpacing: CGFloat = 22
+            static let diskImageLabel = SwiftUI.Font.system(size: 12, weight: .bold)
+            /// Board 2: the menu bar and the panel dropping from it.
+            static let menuBarWidth: CGFloat = 300
+            static let menuBarHeight: CGFloat = 22
+            static let menuBarRadius: CGFloat = 6
+            static let menuBarPadding: CGFloat = 10
+            static let menuIconWidth: CGFloat = 18
+            static let menuIconHeight: CGFloat = 14
+            static let menuIconRadius: CGFloat = 4
+            static let menuIconRing: CGFloat = 2
+            static let menuIconGlyph: CGFloat = 9
+            static let menuItemWidth: CGFloat = 30
+            static let bar: CGFloat = 6
+            static let thinBar: CGFloat = 5
+            static let panelWidth: CGFloat = 200
+            static let panelRadius: CGFloat = 10
+            static let panelPadding: CGFloat = 10
+            static let panelSpacing: CGFloat = 8
+            static let panelTile: CGFloat = 28
+            static let panelTileRadius: CGFloat = 7
+            static let panelLineSpacing: CGFloat = 4
+            static let panelTitleWidth: CGFloat = 60
+            static let panelSubtitleWidth: CGFloat = 90
+            static let panelButtonWidth: CGFloat = 40
+            static let panelButtonHeight: CGFloat = 16
+            static let panelButtonRadius: CGFloat = 5
+            /// Board 3: the Drop badge on the disk image.
+            static let badgeFrame: CGFloat = 96
+            static let badge: CGFloat = 32
+            static let badgeBorder: CGFloat = 3
+            static let badgeGlyph: CGFloat = 14
+            static let badgeTrailing: CGFloat = 2
+            static let badgeBottom: CGFloat = 6
+            /// Board 4: two Login Items rows, Drop's switch on.
+            static let listWidth: CGFloat = 260
+            static let listVerticalPadding: CGFloat = 6
+            static let listHorizontalPadding: CGFloat = 12
+            static let listRowPadding: CGFloat = 8
+            static let listRowSpacing: CGFloat = 10
+            static let listIcon: CGFloat = 22
+            static let listIconRadius: CGFloat = 6
+            static let listIconGlyph: CGFloat = 11
+            static let listLineWidth: CGFloat = 80
+            static let listNameFont = SwiftUI.Font.system(size: 12, weight: .semibold)
+            static let switchWidth: CGFloat = 26
+            static let switchHeight: CGFloat = 15
+            static let switchKnob: CGFloat = 11
+            static let switchInset: CGFloat = 2
+            /// Board 5: the green check.
+            static let check: CGFloat = 72
+            static let checkGlyph: CGFloat = 32
+        }
+    }
+
     enum MenuBar {
         static let statusDot: CGFloat = 8
     }
@@ -127,7 +239,11 @@ enum Theme {
         static let warning = Color(nsColor: .systemOrange)
         static let error = Color(nsColor: .systemRed)
         static let folder = Color(nsColor: .systemBlue)
-        static let secondaryText = Color(nsColor: .secondaryLabelColor)
+        /// Small grey text: captions, info lines, subtitles. The system's secondary label
+        /// measured about 3.1:1 on white at 11-12 pt and 4.0:1 on the dark panel (rendered
+        /// pixels, `.claude/checks/contrast.sh`), under WCAG's 4.5:1, so it's the label colour
+        /// at a lower opacity instead. Increase Contrast gets the full label colour.
+        static let secondaryText = Color(nsColor: .readableSecondaryLabel)
         static let tertiaryText = Color(nsColor: .tertiaryLabelColor)
         static let bodyText = Color(nsColor: .labelColor)
         static let controlBackground = Color(nsColor: .controlBackgroundColor)
@@ -137,6 +253,12 @@ enum Theme {
         static let link = Color(nsColor: .linkColor)
         static let onAccent = Color.white
         static let placeholderTile = Color(nsColor: .quaternaryLabelColor)
+    }
+
+    /// Opacities of the readable secondary label, tuned on rendered text to clear 4.5:1.
+    enum Contrast {
+        static let lightSecondaryOpacity: CGFloat = 0.68
+        static let darkSecondaryOpacity: CGFloat = 0.68
     }
 
     /// How long things linger. Named so the timings can be tuned in one place.
@@ -153,5 +275,18 @@ enum Theme {
         static let quitTimeout: Duration = .seconds(30)
         /// While the pointer rests on board 3, how often it looks whether it has left.
         static let hoverRecheck: Duration = .milliseconds(500)
+    }
+}
+
+extension NSColor {
+    /// See `Theme.Colour.secondaryText`.
+    static let readableSecondaryLabel = NSColor(name: "readableSecondaryLabel") { appearance in
+        switch appearance.bestMatch(from: [
+            .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+        ]) {
+        case .darkAqua: NSColor(white: 1, alpha: Theme.Contrast.darkSecondaryOpacity)
+        case .aqua: NSColor(white: 0, alpha: Theme.Contrast.lightSecondaryOpacity)
+        default: .labelColor
+        }
     }
 }

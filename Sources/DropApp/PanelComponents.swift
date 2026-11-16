@@ -8,7 +8,7 @@ struct PanelCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) { content }
-            .padding(Theme.Panel.padding)
+            .padding(Theme.panelInset)
             .frame(width: Theme.Panel.width, alignment: .leading)
             .background {
                 ZStack {

@@ -33,18 +33,19 @@ struct SettingsView: View {
                 Toggle("Open the app when it's installed", isOn: $preferences.openAfterInstall)
                 Toggle(isOn: $preferences.skipFirstOpenPrompt) {
                     Text("Skip the \u{201C}downloaded from the Internet\u{201D} prompt")
-                    Text("Only for apps notarized by Apple.")
+                    Text("Only for apps notarized by Apple.").foregroundStyle(Theme.Colour.secondaryText)
                 }
             }
             Section {
                 Toggle("Open Drop at login", isOn: loginBinding)
                 Toggle(isOn: handlerBinding) {
                     Text("Open disk images with Drop")
-                    Text("Double-click a .dmg to get the install panel.")
+                    Text("Double-click a .dmg to get the install panel.").foregroundStyle(Theme.Colour.secondaryText)
                 }
                 Toggle(isOn: $preferences.keepInMenuBar) {
                     Text("Keep in menu bar")
-                    Text("Otherwise the icon shows only while Drop asks you something.")
+                    Text("Otherwise the icon shows only while Drop asks you something.").foregroundStyle(
+                        Theme.Colour.secondaryText)
                 }
             } header: {
                 Text("General")

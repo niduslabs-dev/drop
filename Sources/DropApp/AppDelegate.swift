@@ -1,6 +1,7 @@
 import AppKit
 import Extractor
 import Mounter
+import Onboarding
 import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
@@ -15,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let launch: LaunchOptions
     let preferences: Preferences
     let store: Store
+    /// The preferences domain: the app's, or the test domain in test launches. Settings and
+    /// onboarding's state both live here.
+    let defaults: UserDefaults
 
     /// Test launches (`--watch`, `--destination`, `--trash`, `--demo`) keep their settings
     /// and handled list apart from the real ones, so a test never shows up in Recent or
@@ -23,14 +27,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let launch = LaunchOptions()
         self.launch = launch
         if launch.isTesting {
-            preferences = Preferences(defaults: UserDefaults(suiteName: Self.testSuite) ?? .standard)
+            defaults = UserDefaults(suiteName: Self.testSuite) ?? .standard
+            preferences = Preferences(defaults: defaults)
             store = Store(
                 directory: FileManager.default.temporaryDirectory.appending(
                     path: Self.testSuite, directoryHint: .isDirectory))
         } else {
+            defaults = .standard
             preferences = Preferences()
             store = Store()
         }
+        #if DEBUG
+            if launch.resetOnboarding { OnboardingCoordinator.reset(in: defaults) }
+        #endif
         super.init()
     }
 
@@ -40,7 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var controller: InstallController!
     private(set) var settings: SettingsWindowController!
     private var watcher: DownloadsWatcher?
-    private let onboarding = OnboardingCoordinator()
+    private(set) var onboarding: OnboardingCoordinator!
+    private(set) var onboardingWindow: OnboardingWindowController?
     /// Pause Watching from the menu: until resumed or Drop restarts.
     private var isPaused = false
     /// Disk images opened before launch finished (Open With starts Drop with them).
@@ -82,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             forName: Self.showSettingsNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.settings.show() }
+            MainActor.assumeIsolated { self?.showSettingsOrOnboarding() }
         }
 
         isLaunched = true
@@ -106,15 +116,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
 
         sweepLeftovers()
-        if launch.manageLoginItem {
-            if !preferences.launchedBefore, preferences.openAtLogin { setLoginItem(true) }
-        } else {
+        if !launch.manageLoginItem {
             Log.app.info("Login item left alone (test launch); status \(SMAppService.mainApp.status.rawValue)")
         }
         preferences.opensDiskImages = DiskImageHandler.isDropDefault
         observePreferences()
-        onboarding.onFinish = { [weak self] in self?.updateWatcher() }
+        startOnboarding()
         updateWatcher()
+    }
+
+    // MARK: Onboarding
+
+    /// Builds the coordinator and shows onboarding when it's due. Test launches get stand-ins
+    /// that leave the real default handler and login item alone, and list the real folder
+    /// only when it's a `--watch` test folder, never `~/Downloads`.
+    private func startOnboarding() {
+        let access: any FolderAccessChecking =
+            launch.isTesting && launch.watchFolder == nil
+            ? DeniedFolderAccess() : ListingFolderAccess()
+        let coordinator = OnboardingCoordinator(
+            defaults: defaults, folderAccess: access,
+            defaultHandler: launch.isTesting ? TestDefaultHandler() : LiveDefaultHandler(),
+            loginItem: launch.manageLoginItem ? LiveLoginItem() : TestLoginItem())
+        coordinator.onWatchingAllowed = { [weak self] in self?.updateWatcher() }
+        coordinator.onFolderChosen = { [weak self] in self?.preferences.watchedFolder = $0 }
+        coordinator.onDefaultHandlerChanged = { [weak self] in self?.preferences.opensDiskImages = $0 }
+        coordinator.onLoginItemChosen = { [weak self] in self?.preferences.openAtLogin = $0 }
+        coordinator.onEnd = { [weak self] in
+            self?.onboardingWindow?.close()
+            self?.updateWatcher()
+        }
+        onboarding = coordinator
+        guard !launch.skipsOnboarding, coordinator.showsAtLaunch else { return }
+        coordinator.reopened()
+        showOnboarding(coordinator)
+    }
+
+    /// Opens the onboarding window for `coordinator` (the app's, or a demo's).
+    func showOnboarding(_ coordinator: OnboardingCoordinator) {
+        let window = OnboardingWindowController(coordinator: coordinator) { [weak self] close in
+            OnboardingView(
+                coordinator: coordinator,
+                folder: { [weak self] in self?.watchedFolder ?? FileManager.default.homeDirectoryForCurrentUser },
+                chooseFolder: { [weak self] in self?.chooseOnboardingFolder() },
+                openPrivacySettings: { NSWorkspace.shared.open(Self.filesAndFoldersSettings) },
+                close: close)
+        }
+        onboardingWindow = window
+        window.show()
+    }
+
+    /// System Settings › Privacy & Security › Files and Folders.
+    static let filesAndFoldersSettings = URL(
+        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")!
+
+    /// Choose another folder. Starts in the home folder, not the watched one: showing
+    /// `~/Downloads` in the panel would be an access of its own.
+    private func chooseOnboardingFolder() -> URL? {
+        let open = NSOpenPanel()
+        open.canChooseDirectories = true
+        open.canChooseFiles = false
+        open.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        open.prompt = "Watch"
+        guard open.runModal() == .OK else { return nil }
+        return open.url
+    }
+
+    /// Opening Drop again shows onboarding while it's open, else Settings.
+    private func showSettingsOrOnboarding() {
+        if let onboardingWindow, onboardingWindow.isVisible {
+            onboardingWindow.show()
+        } else {
+            settings.show()
+        }
     }
 
     /// Open With › Drop, or a double-click when Drop is the default for disk images. An
@@ -136,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        settings.show()
+        showSettingsOrOnboarding()
         return false
     }
 
@@ -145,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.detachInstallerMounts()
     }
 
-    private var watchedFolder: URL { launch.watchFolder ?? preferences.watchedFolder }
+    var watchedFolder: URL { launch.watchFolder ?? preferences.watchedFolder }
     private var watchedFolderName: String { FileManager.default.displayName(atPath: watchedFolder.path) }
 
     /// Clears staging areas and hidden mounts a crash or force quit left behind.
@@ -167,7 +241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Starts or stops the watcher to match the settings. Waits for onboarding: starting it
     /// is Drop's first access to the watched folder (see `OnboardingCoordinator`).
     private func updateWatcher() {
-        let wanted = onboarding.isComplete && preferences.askOnNewImage && !isPaused
+        let allowed = launch.skipsOnboarding || (onboarding?.allowsWatching ?? false)
+        let wanted = allowed && preferences.askOnNewImage && !isPaused
         if let watcher, watcher.folder == watchedFolder.standardizedFileURL, watcher.isRunning == wanted { return }
         watcher?.stop()
         watcher = nil
