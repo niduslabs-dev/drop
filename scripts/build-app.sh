@@ -30,7 +30,7 @@ BUILD_NUMBER=${BUILD:-$VERSION}
 SIGN_IDENTITY=${SIGN_IDENTITY:--}
 # The public half of the EdDSA key that signs release DMGs (private half: the
 # SPARKLE_ED_PRIVATE_KEY repo secret). Sparkle refuses any update not signed with it.
-SPARKLE_PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-Xpg3Rqae374NnCgOel6deZTIslj/4pwSC6YVxESI/5A=}
+SPARKLE_PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-p7u8c5nnyGRLyMCP3jVZwN2DzABRFK1KzdC7GIM3lQQ=}
 FEED_URL=https://github.com/niduslabs-dev/drop/releases/latest/download/appcast.xml
 MIN_MACOS=15.0
 APP=.build/Drop.app
