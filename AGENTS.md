@@ -1,0 +1,30 @@
+# Drop
+
+A Mac app that installs an app straight out of a `.dmg` without mounting it, and offers to when a new DMG lands in Downloads. Plan and decisions: `../plans/drop.md`. Design: [Drop design canvas](https://claude.ai/artifact/CEdSxX9BX5hCrDkJPLgKts). Research, benchmarks and the sample DMGs: `.claude/` (gitignored).
+
+## Layout
+
+A Swift package (`Package.swift`), no Xcode project yet:
+
+- `ReaderCore`: shared types (`BlockDevice`, `FileSystem`, `Entry`, `Extent`, `ByteReader`, `ReaderError`).
+- `DiskImage`: UDIF container, decoders, partition maps.
+- `HFSPlus`, `APFS`: read-only filesystems over a `BlockDevice`.
+- `DMGReader`: opens a `.dmg` and returns its filesystem. `dmg-inspect`: a CLI over it.
+
+## Commands
+
+Homebrew's LLVM env breaks Xcode builds, so build through `scripts/swift.sh`, which clears it:
+
+```sh
+scripts/swift.sh build
+scripts/swift.sh test                 # unit tests; fixtures first: scripts/fixtures-*.sh
+DROP_CORPUS=1 scripts/swift.sh test   # also the 34 real DMGs in .claude/samples/
+scripts/swift.sh run dmg-inspect <file.dmg> [--tree]
+```
+
+## Conventions
+
+- **Format and lint with Apple's `swift format`** (ships with Xcode, nothing to install or pin), configured by `.swift-format`: `swift format --in-place --recursive Sources Tests Package.swift`, then `swift format lint --strict --recursive Sources Tests Package.swift`. Decided 2026-11-16 over SwiftFormat and SwiftLint.
+- **Every on-disk read is bounds-checked** through `ByteReader`; a corrupt image throws `ReaderError.corrupt`, never crashes or hangs.
+- **Images are untrusted input.** Tests never mount. Scripts that mount use `hdiutil attach -nobrowse -noautoopen -mountrandom` and detach by device node: `-readonly` for anything downloaded; read-write only for a fixture image the script just created itself (to add compressed, fragmented or case-only files hdiutil won't copy).
+- **No package dependencies** beyond the system libraries (libz, libbz2, Compression).
