@@ -19,7 +19,10 @@
     /// states window-licence, window-licence-one, window-installing, window-done,
     /// window-warning, window-refused and window-update, and onboarding
     /// pages onboarding-1 to onboarding-5 and onboarding-2-denied (fakes, so no request
-    /// reaches macOS; closing the window quits).
+    /// reaches macOS; closing the window quits). `select-settings`, `select-main` (the
+    /// popup) and `select-window` open that surface's Install to menu, plain, with `-hover`
+    /// (the pointer's highlight on the second row) or `-key` (Down pressed once); they also
+    /// print `DEMO_MENU <id>` and both frames for measuring.
     @MainActor
     enum Demo {
         static let states = [
@@ -31,7 +34,8 @@
             "window-installing", "window-progress-30", "window-progress-62", "window-done", "window-warning",
             "window-refused", "window-update", "onboarding-1",
             "onboarding-2", "onboarding-2-denied", "onboarding-3",
-            "onboarding-4", "onboarding-5",
+            "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
+            "select-main", "select-main-hover", "select-window", "select-window-key",
         ]
 
         private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
@@ -45,6 +49,10 @@
         }
 
         static func run(_ state: String, app: AppDelegate) {
+            if state.hasPrefix("select-") {
+                runSelect(state, app: app)
+                return
+            }
             if state.hasPrefix("onboarding-") {
                 runOnboarding(state, app: app)
                 return
@@ -94,6 +102,48 @@
                 // Report once the slide-in and the content's blur have settled.
                 try? await Task.sleep(for: settle)
                 report(app.panel.windowNumber)
+            }
+        }
+
+        /// Opens a surface's Install to select through `SelectDemo`, never a click.
+        private static func runSelect(_ state: String, app: AppDelegate) {
+            let parts = state.split(separator: "-").map(String.init)
+            let surface = parts.count > 1 ? parts[1] : "settings"
+            let mode = parts.count > 2 ? parts[2] : ""
+            let label: String
+            let window: () -> Int
+            switch surface {
+            case "main", "window":
+                label = "Install to"
+                let model = makeModel(surface)
+                model.send = { action in
+                    if action == .close || action == .notNow { NSApp.terminate(nil) }
+                }
+                app.panel.show(model)
+                window = { app.panel.windowNumber }
+            default:
+                label = "Install apps to"
+                app.settings.show()
+                window = { app.settings.windowNumber ?? 0 }
+            }
+            Task {
+                try? await Task.sleep(for: settle)
+                guard let menu = SelectDemo.openers[label]?(mode == "key") else {
+                    print("DEMO_ERROR no select named \(label)")
+                    report(window())
+                    return
+                }
+                switch mode {
+                case "hover": menu.hover(1)
+                case "key": menu.handle(.down)
+                default: break
+                }
+                try? await Task.sleep(for: redraw)
+                let frame = { (rect: NSRect) in "\(rect.minX) \(rect.minY) \(rect.width) \(rect.height)" }
+                print("DEMO_SELECT_FRAME \(frame(menu.selectFrame))")
+                print("DEMO_MENU_FRAME \(frame(menu.menuFrame))")
+                print("DEMO_MENU \(menu.windowNumber)")
+                report(window())
             }
         }
 

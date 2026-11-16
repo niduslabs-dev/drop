@@ -174,13 +174,6 @@ enum Theme {
         static let focusRing: CGFloat = 2
         static let focusRingOffset: CGFloat = 2
         static let disabledOpacity: Double = 0.45
-        static let selectLeading: CGFloat = 12
-        static let selectTrailing: CGFloat = 10
-        static let selectSpacing: CGFloat = 8
-        static let selectIcon: CGFloat = 13
-        static let selectChevron: CGFloat = 9
-        /// Space between the select and the menu it opens.
-        static let menuGap: CGFloat = 4
         static let switchWidth: CGFloat = 34
         static let switchHeight: CGFloat = 20
         static let switchKnob: CGFloat = 16
@@ -194,6 +187,48 @@ enum Theme {
         static let fieldVerticalPadding: CGFloat = 7
         static let fieldHorizontalPadding: CGFloat = 11
         static let fieldBorder: CGFloat = 1
+    }
+
+    /// The Nidus select (`NidusSelect`) and its menu (SelectMenu board).
+    enum Select {
+        static let height: CGFloat = 28
+        static let minWidth: CGFloat = 144
+        static let cornerRadius: CGFloat = Radius.control
+        static let leading: CGFloat = 10
+        static let trailing: CGFloat = Space.s
+        /// Between the value and the chevron.
+        static let spacing: CGFloat = Space.s
+        /// Between the folder icon and the path, in the closed select.
+        static let iconSpacing: CGFloat = Space.xs
+        static let icon: CGFloat = 16
+        static let chevron: CGFloat = 9
+        static let fontSize: CGFloat = 13
+        /// The soft moss ring the select wears while its menu is open, outside its edge.
+        static let openRing: CGFloat = 3
+        static let openRingOpacityLight: Double = 0.25
+        static let openRingOpacityDark: Double = 0.35
+
+        /// Between the select's bottom edge and the menu's top edge.
+        static let menuGap: CGFloat = Space.xxs
+        static let menuRadius: CGFloat = 10
+        static let menuPadding: CGFloat = Space.xs
+        static let menuHairline: CGFloat = 0.5
+        /// Ink glass in dark: #24232B at 96% over the behind-window blur.
+        static let menuDarkTint: UInt32 = 0x24232B
+        static let menuDarkTintOpacity: Double = 0.96
+        static let rowHeight: CGFloat = 32
+        static let rowRadius: CGFloat = 7
+        static let rowGap: CGFloat = Space.xxxs
+        static let rowPadding: CGFloat = 10
+        static let rowIconSpacing: CGFloat = 10
+        static let check: CGFloat = 14
+        static let checkWeight: SwiftUI.Font.Weight = .bold
+        static let checkSize: CGFloat = 12
+        /// Hover and keyboard highlight: moss over the surface.
+        static let highlightLight: Double = 0.10
+        static let highlightDark: Double = 0.16
+        /// Typed letters count as one search while they come this close together.
+        static let typeaheadWindow: TimeInterval = 1
     }
 
     enum Header {
@@ -256,7 +291,6 @@ enum Theme {
         static let titleInfoGap: CGFloat = Space.xs
         static let captionGap: CGFloat = Space.xxxs
         static let dividerInset: CGFloat = Space.l
-        static let selectMinWidth: CGFloat = 144
     }
 
     /// The AppWindow primitive: the centred install window an opened image gets

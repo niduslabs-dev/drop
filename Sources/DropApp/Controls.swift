@@ -101,15 +101,15 @@ struct FocusRing<S: InsettableShape>: ViewModifier {
 
 // MARK: - Buttons
 
-/// Primary (moss capsule), secondary (paper capsule with a hairline), link (text) and
-/// select (paper, radius 8). A `PrimitiveButtonStyle`, so it can trigger the button from
-/// Space and draw its own pressed state; Return still reaches `.keyboardShortcut`.
+/// Primary (moss capsule), secondary (paper capsule with a hairline) and link (text). The
+/// select is its own control (`NidusSelect`, Select.swift). A `PrimitiveButtonStyle`, so it
+/// can trigger the button from Space and draw its own pressed state; Return still reaches
+/// `.keyboardShortcut`.
 struct NidusButtonStyle: PrimitiveButtonStyle {
     enum Kind {
         case primary
         case secondary
         case link(Color)
-        case select
         /// The label as drawn, with only the press shade and the focus ring: disclosure rows
         /// and the ⓘ button.
         case plain
@@ -183,7 +183,7 @@ private struct NidusButtonBody: View {
         switch kind {
         case .primary, .secondary: RoundedRectangle(cornerRadius: height / 2, style: .continuous)
         case .link: RoundedRectangle(cornerRadius: Theme.Button.linkFocusRadius, style: .continuous)
-        case .select, .plain: RoundedRectangle(cornerRadius: Theme.Control.cornerRadius, style: .continuous)
+        case .plain: RoundedRectangle(cornerRadius: Theme.Control.cornerRadius, style: .continuous)
         }
     }
 
@@ -203,15 +203,6 @@ private struct NidusButtonBody: View {
                 .foregroundStyle(Theme.Colour.bodyText)
                 .padding(.horizontal, horizontalPadding)
                 .frame(minWidth: heroWidth, minHeight: height)
-                .background(paper)
-                .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Button.hairline) }
-        case .select:
-            label
-                .font(font ?? Theme.Font.body)
-                .foregroundStyle(Theme.Colour.bodyText)
-                .padding(.leading, Theme.Control.selectLeading)
-                .padding(.trailing, Theme.Control.selectTrailing)
-                .frame(minHeight: height)
                 .background(paper)
                 .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Button.hairline) }
         case .link(let colour):
@@ -323,88 +314,6 @@ private struct NidusSwitchBody: View {
             .frame(width: Theme.Control.switchWidth, height: Theme.Control.switchHeight)
             .modifier(FocusRing(isFocused: isFocused, shape: shape))
     }
-}
-
-// MARK: - Select
-
-/// The kit's select: a paper control (radius 8) that opens a real menu below itself. Built
-/// on a button that pops up an `NSMenu`, so it joins the Tab loop and opens with Space like
-/// the other controls; SwiftUI's `Menu` can't be opened from the keyboard that way.
-struct NidusSelect<Value: Hashable>: View {
-    let label: String
-    let selection: Value
-    let options: [Value]
-    let title: (Value) -> String
-    var icon: String?
-    let onSelect: (Value) -> Void
-
-    @State private var anchor = ViewAnchor()
-
-    var body: some View {
-        Button(action: popUp) {
-            HStack(spacing: Theme.Control.selectSpacing) {
-                if let icon {
-                    Image(systemName: icon)
-                        .font(.system(size: Theme.Control.selectIcon))
-                        .foregroundStyle(Theme.Colour.link)
-                }
-                Text(title(selection))
-                Image(systemName: "chevron.down")
-                    .font(.system(size: Theme.Control.selectChevron, weight: .bold))
-                    .foregroundStyle(Theme.Colour.secondaryText)
-            }
-        }
-        .buttonStyle(NidusButtonStyle(kind: .select))
-        .background(AnchorView(anchor: anchor))
-        .accessibilityLabel(label)
-        .accessibilityValue(title(selection))
-    }
-
-    private func popUp() {
-        guard let view = anchor.view else { return }
-        let menu = NSMenu()
-        for option in options {
-            let item = ClosureMenuItem(title: title(option)) { onSelect(option) }
-            item.state = option == selection ? .on : .off
-            menu.addItem(item)
-        }
-        let below = view.isFlipped ? view.bounds.maxY + Theme.Control.menuGap : -Theme.Control.menuGap
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: below), in: view)
-    }
-}
-
-/// Holds the AppKit view behind a SwiftUI control, to position a menu on it.
-@MainActor
-final class ViewAnchor {
-    weak var view: NSView?
-}
-
-private struct AnchorView: NSViewRepresentable {
-    let anchor: ViewAnchor
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        anchor.view = view
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) { anchor.view = view }
-}
-
-/// A menu item that runs a closure.
-final class ClosureMenuItem: NSMenuItem {
-    private let handler: () -> Void
-
-    init(title: String, handler: @escaping () -> Void) {
-        self.handler = handler
-        super.init(title: title, action: #selector(run), keyEquivalent: "")
-        target = self
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) { fatalError("not used from a nib") }
-
-    @objc private func run() { handler() }
 }
 
 // MARK: - Fields

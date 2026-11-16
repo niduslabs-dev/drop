@@ -79,8 +79,7 @@ struct MainBoard: View {
                     Text("Install to").foregroundStyle(Theme.Colour.bodyText)
                     Spacer()
                     NidusSelect(
-                        label: "Install to", selection: model.location, options: InstallLocation.allCases,
-                        title: \.title, icon: "folder"
+                        label: "Install to", selection: model.location, options: InstallLocation.selectOptions
                     ) { model.send(.changeLocation($0)) }
                 }
                 Toggle("Move the disk image to the Trash", isOn: $model.trashImage)
@@ -417,8 +416,8 @@ struct LicenceBoard: View {
                 Spacer(minLength: 0)
                 if let licence, licence.languages.count > 1 {
                     NidusSelect(
-                        label: "Language", selection: model.licenceLanguage, options: Array(licence.languages.indices),
-                        title: { LicenceText.languageName(licence.languages[$0], index: $0) }
+                        label: "Language", selection: model.licenceLanguage,
+                        options: LicenceText.languageOptions(licence)
                     ) { model.licenceLanguage = $0 }
                 }
             }
@@ -490,6 +489,14 @@ enum LicenceText {
         11: "fr", 12: "nb", 13: "he", 14: "ja", 15: "en", 16: "ar", 17: "fi", 18: "fr", 19: "de", 20: "el",
         21: "is", 24: "tr", 33: "ko", 51: "ko", 52: "zh-Hans", 53: "zh-Hant",
     ]
+
+    /// The Language select's choices: each language by its own name.
+    static func languageOptions(_ licence: LicenceAgreement) -> [SelectOption<Int>] {
+        licence.languages.indices.map { index in
+            let name = languageName(licence.languages[index], index: index)
+            return SelectOption(value: index, label: name, accessibilityLabel: name)
+        }
+    }
 
     static func languageName(_ language: LicenceAgreement.Language, index: Int) -> String {
         if let name = language.buttons.first, !name.isEmpty { return name }

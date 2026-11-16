@@ -81,9 +81,8 @@ struct SettingsView: View {
                     SettingsRow("Install apps to") {
                         NidusSelect(
                             label: "Install apps to", selection: preferences.installLocation,
-                            options: InstallLocation.allCases, title: \.title
+                            options: InstallLocation.selectOptions
                         ) { preferences.installLocation = $0 }
-                        .frame(minWidth: Theme.Row.selectMinWidth, alignment: .trailing)
                     }
                     SwitchRow(title: "Move the disk image to the Trash", isOn: $preferences.trashImage)
                     SwitchRow(title: "Open the app when it's installed", isOn: $preferences.openAfterInstall)

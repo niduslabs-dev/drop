@@ -151,10 +151,8 @@ struct InstallWindowView: View {
         RowCard {
             SettingsRow("Install to") {
                 NidusSelect(
-                    label: "Install to", selection: model.location, options: InstallLocation.allCases,
-                    title: \.title, icon: "folder"
+                    label: "Install to", selection: model.location, options: InstallLocation.selectOptions
                 ) { model.send(.changeLocation($0)) }
-                .frame(minWidth: Theme.Row.selectMinWidth, alignment: .trailing)
             }
             SwitchRow(title: "Move the disk image to the Trash", isOn: $model.trashImage)
         }
@@ -343,8 +341,8 @@ private struct LicenceCard: View {
                     Text("Language").font(Theme.Font.small).foregroundStyle(Theme.Colour.secondaryText)
                     Spacer(minLength: 0)
                     NidusSelect(
-                        label: "Language", selection: model.licenceLanguage, options: Array(licence.languages.indices),
-                        title: { LicenceText.languageName(licence.languages[$0], index: $0) }
+                        label: "Language", selection: model.licenceLanguage,
+                        options: LicenceText.languageOptions(licence)
                     ) { model.licenceLanguage = $0 }
                 }
             }
