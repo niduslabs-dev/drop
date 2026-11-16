@@ -1,4 +1,4 @@
-# Drop
+# Drop: DMG Installer
 
 Install Mac apps straight from a `.dmg`, without mounting it.
 
