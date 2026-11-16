@@ -361,6 +361,9 @@ struct TimingTests {
         let validate = await clock.measure { _ = await Verifier.validate(app: app) }
         let validateAgain = await clock.measure { _ = await Verifier.validate(app: app) }
         let assess = await clock.measure { _ = await Verifier.assess(app: app) }
+        let spctl = await clock.measure {
+            _ = await Verifier.$assessmentRoute.withValue(.spctlOnly) { await Verifier.assess(app: app) }
+        }
         let ticket = clock.measure { _ = try? Verifier.ticket(fromDMG: try Fixtures.dmg(name)) }
         func ms(_ duration: Duration) -> String {
             String(
@@ -369,6 +372,177 @@ struct TimingTests {
         }
         print(
             "timing \(name): signingInfo \(ms(info)) ms, validate \(ms(validate)) ms (again \(ms(validateAgain)) ms), "
-                + "assess \(ms(assess)) ms, ticket \(ms(ticket)) ms")
+                + "assess \(ms(assess)) ms, spctl \(ms(spctl)) ms, ticket \(ms(ticket)) ms")
+    }
+}
+
+/// The `spctl` fallback `assess` uses when `SecAssessmentCreate` is missing or broken.
+@Suite struct SpctlFallbackTests {
+    /// A framework API whose `SecAssessmentCreate` fails without an error, as a stub of a
+    /// removed or changed call might.
+    static let brokenSPI: SecuritySPI.Assessment? = SecuritySPI.assessment.map { real in
+        SecuritySPI.Assessment(
+            create: { _, _, _, _ in nil }, copyResult: real.copyResult, operationKey: real.operationKey,
+            operationExecute: real.operationExecute, verdictKey: real.verdictKey, authorityKey: real.authorityKey,
+            sourceKey: real.sourceKey, originatorKey: real.originatorKey,
+            codeSigningErrorKey: real.codeSigningErrorKey)
+    }
+
+    static func assess(_ app: URL, route: AssessmentRoute, timeout: Duration = Verifier.defaultAssessmentTimeout)
+        async -> AssessmentResult
+    {
+        await Verifier.$assessmentRoute.withValue(route) { await Verifier.assess(app: app, timeout: timeout) }
+    }
+
+    static func both(_ app: URL) async throws -> (framework: Assessment, spctl: Assessment) {
+        let framework = try #require(await assess(app, route: .frameworkOnly).assessment)
+        let spctl = try #require(await assess(app, route: .spctlOnly).assessment)
+        #expect(framework.method == .securityFramework)
+        #expect(spctl.method == .spctl)
+        return (framework, spctl)
+    }
+
+    @Test(arguments: Fixtures.notarized + [Fixtures.developmentSigned])
+    func realAppsMatchFramework(name: String) async throws {
+        let (framework, spctl) = try await Self.both(try Fixtures.real(name))
+        #expect(spctl.accepted == framework.accepted)
+        #expect(spctl.source == framework.source)
+        #expect(spctl.status == framework.status)
+    }
+
+    @Test(arguments: ["AdHoc", "Unsigned", "Tampered"])
+    func syntheticAppsMatchFramework(name: String) async throws {
+        let (framework, spctl) = try await Self.both(try Fixtures.synthetic(name))
+        #expect(!spctl.accepted)
+        #expect(spctl.source == framework.source)
+        #expect(spctl.status == framework.status)
+    }
+
+    @Test func syntheticDetails() async throws {
+        let unsigned = try #require(await Self.assess(try Fixtures.synthetic("Unsigned"), route: .spctlOnly).assessment)
+        #expect(unsigned.source == Assessment.Source.noUsableSignature)
+        let tampered = try #require(await Self.assess(try Fixtures.synthetic("Tampered"), route: .spctlOnly).assessment)
+        #expect(tampered.status == errSecCSBadResource)
+    }
+
+    @Test func brokenFrameworkFallsBack() async throws {
+        let spi = try #require(Self.brokenSPI)
+        let route = AssessmentRoute(spi: spi, spctl: AssessmentRoute.systemSpctl)
+        let assessment = try #require(await Self.assess(try Fixtures.real("Rectangle"), route: route).assessment)
+        #expect(assessment.method == .spctl)
+        #expect(assessment.isCheckedByApple)
+        #expect(
+            await Self.assess(try Fixtures.real("Rectangle"), route: AssessmentRoute(spi: spi, spctl: nil))
+                == .unavailable)
+    }
+
+    @Test(arguments: Fixtures.notarized)
+    func verdictInstallsWithoutFramework(name: String) async throws {
+        let app = try Fixtures.real(name)
+        let verdict = await Verifier.$assessmentRoute.withValue(.spctlOnly) { await Verifier.verdict(app: app) }
+        #expect(verdict.decision == .install)
+        #expect(verdict.allowsPreApproval)
+        #expect(verdict.assessment?.assessment?.method == .spctl)
+    }
+
+    @Test func syncOverloadUsesRoute() throws {
+        let app = try Fixtures.real("Stats")
+        let result = Verifier.$assessmentRoute.withValue(.spctlOnly) { Verifier.assess(app: app) }
+        #expect(result.assessment?.method == .spctl)
+        #expect(result.assessment?.isCheckedByApple == true)
+    }
+
+    @Test func missingToolIsUnavailable() async throws {
+        let route = AssessmentRoute(spi: nil, spctl: Fixtures.root.appending(path: "no-such-spctl"))
+        #expect(await Self.assess(try Fixtures.real("Rectangle"), route: route) == .unavailable)
+    }
+
+    /// A stand-in spctl that records its PID and hangs, like one stuck on a ticket lookup.
+    static func hangingTool() throws -> (tool: URL, pidFile: URL, folder: URL) {
+        let folder = Fixtures.root.appending(path: "work/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let pidFile = folder.appending(path: "pid")
+        let tool = folder.appending(path: "hang")
+        try "#!/bin/sh\necho $$ > '\(pidFile.path)'\nexec /bin/sleep 60\n".write(
+            to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        return (tool, pidFile, folder)
+    }
+
+    /// Long enough for the stand-in to start and write its PID under a parallel test run,
+    /// far short of its 60 s sleep.
+    static let hangTimeout: Duration = .seconds(3)
+
+    /// Waits up to `limit` for `pid` to be gone (exited and reaped).
+    static func gone(_ pid: pid_t, within limit: Duration = .seconds(5)) async throws -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while ContinuousClock.now < deadline {
+            if kill(pid, 0) == -1 && errno == ESRCH { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    static func pid(_ file: URL) async throws -> pid_t {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
+            if let text = try? String(contentsOf: file, encoding: .utf8),
+                let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            {
+                return pid
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw CancellationError()
+    }
+
+    @Test func timeoutKillsChild() async throws {
+        let (tool, pidFile, folder) = try Self.hangingTool()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let route = AssessmentRoute(spi: nil, spctl: tool)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let result = await Self.assess(try Fixtures.real("Rectangle"), route: route, timeout: Self.hangTimeout)
+        #expect(result == .notAssessed(.timedOut))
+        #expect(clock.now - start < Self.hangTimeout + .seconds(2))
+        #expect(try await Self.gone(try await Self.pid(pidFile)))
+    }
+
+    @Test func syncTimeoutKillsChild() async throws {
+        let (tool, pidFile, folder) = try Self.hangingTool()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let app = try Fixtures.real("Rectangle")
+        let route = AssessmentRoute(spi: nil, spctl: tool)
+        let result = await Task.detached {
+            Verifier.$assessmentRoute.withValue(route) { Verifier.assess(app: app, timeout: Self.hangTimeout) }
+        }.value
+        #expect(result == .notAssessed(.timedOut))
+        #expect(try await Self.gone(try await Self.pid(pidFile)))
+    }
+
+    @Test func cancellationKillsChild() async throws {
+        let (tool, pidFile, folder) = try Self.hangingTool()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let app = try Fixtures.real("Rectangle")
+        let task = Task { await Self.assess(app, route: AssessmentRoute(spi: nil, spctl: tool)) }
+        let pid = try await Self.pid(pidFile)
+        task.cancel()
+        #expect(await task.value == .notAssessed(.cancelled))
+        #expect(try await Self.gone(pid))
+    }
+
+    @Test func parsesOutput() {
+        let path = "/x/A: B.app"
+        let accepted = Spctl.parse("\(path): accepted\nsource=Notarized Developer ID\n", path: path, exitStatus: 0)
+        #expect(accepted == Assessment(accepted: true, source: "Notarized Developer ID", status: nil, method: .spctl))
+        let reason = SecCopyErrorMessageString(errSecCSRevokedNotarization, nil)! as String
+        let revoked = Spctl.parse(
+            "\(path): rejected (\(reason))\nsource=Notarized Developer ID\n", path: path, exitStatus: 3)
+        #expect(revoked?.isRevoked == true)
+        #expect(revoked?.accepted == false)
+        #expect(Spctl.parse("\(path): rejected\n", path: path, exitStatus: 3)?.source == nil)
+        #expect(Spctl.parse("\(path): something new\n", path: path, exitStatus: 1) == nil)
+        #expect(Spctl.parse("\(path): accepted\n", path: path, exitStatus: 3) == nil)
+        #expect(Spctl.parse("spctl: usage\n", path: path, exitStatus: 2) == nil)
     }
 }

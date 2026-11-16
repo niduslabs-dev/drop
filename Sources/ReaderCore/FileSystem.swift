@@ -26,6 +26,9 @@ public struct Entry: Sendable, Hashable {
     /// seconds only). Nil when the filesystem doesn't record one; the extractor then leaves
     /// the time it was written.
     public let modificationTime: Timestamp?
+    /// When the item was created (HFS+ `createDate`, APFS `create_time`). Nil when the
+    /// filesystem doesn't record one; the extractor then leaves the time it was written.
+    public let creationTime: Timestamp?
 
     /// A point in time as seconds and nanoseconds since 1970-01-01 UTC, the shape
     /// `futimens` takes, so no precision is lost through a `Double`.
@@ -42,7 +45,8 @@ public struct Entry: Sendable, Hashable {
 
     public init(
         id: UInt64, name: String, kind: Kind, mode: UInt16, size: UInt64,
-        isCompressed: Bool = false, isHardLink: Bool = false, modificationTime: Timestamp? = nil
+        isCompressed: Bool = false, isHardLink: Bool = false, modificationTime: Timestamp? = nil,
+        creationTime: Timestamp? = nil
     ) {
         self.id = id
         self.name = name
@@ -52,6 +56,7 @@ public struct Entry: Sendable, Hashable {
         self.isCompressed = isCompressed
         self.isHardLink = isHardLink
         self.modificationTime = modificationTime
+        self.creationTime = creationTime
     }
 }
 

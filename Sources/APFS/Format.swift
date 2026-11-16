@@ -129,6 +129,7 @@ enum Format {
     enum Inode {
         static let parentID = 0
         static let privateID = 8
+        static let creationTime = 16
         static let modificationTime = 24
         static let linkCount = 56
         static let bsdFlags = 68

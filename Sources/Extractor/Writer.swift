@@ -51,8 +51,8 @@ final class Writer: Sendable {
     }
 
     func write(_ plan: StagePlan) throws {
-        let previousPolicy = applyIOPolicy()
-        defer { restoreIOPolicy(previousPolicy) }
+        options.job.attach(options.onBoost)
+        defer { options.job.detach() }
 
         for item in plan.directories {
             try checkCancelled()
@@ -108,7 +108,6 @@ final class Writer: Sendable {
                 defer { group.leave() }
                 runWorker(files)
             }
-            thread.qualityOfService = options.priority == .background ? .background : .userInitiated
             thread.start()
         }
         group.wait()
@@ -116,14 +115,14 @@ final class Writer: Sendable {
     }
 
     private func runWorker(_ files: [PlannedItem]) {
-        _ = applyIOPolicy()
+        var priority = WorkerPriority(job: options.job, background: isBackground)
         let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: options.bufferSize, alignment: 16)
         defer { buffer.deallocate() }
         while failure.withLock({ $0 == nil }) {
             let index = nextFile.add(1, ordering: .relaxed).oldValue
             guard index < files.count else { return }
             do {
-                try writeFile(files[index], buffer: buffer)
+                try writeFile(files[index], buffer: buffer, priority: &priority)
             } catch {
                 failure.withLock { if $0 == nil { $0 = error } }
                 return
@@ -131,7 +130,10 @@ final class Writer: Sendable {
         }
     }
 
-    private func writeFile(_ item: PlannedItem, buffer: UnsafeMutableRawBufferPointer) throws {
+    private func writeFile(
+        _ item: PlannedItem, buffer: UnsafeMutableRawBufferPointer, priority: inout WorkerPriority
+    ) throws {
+        priority.update()
         try checkCancelled()
         let entry = item.entry
         let mode = entry.mode & Self.permissionMask
@@ -153,6 +155,9 @@ final class Writer: Sendable {
             guard !extent.isHole else { continue }
             var offset = max(extent.fileOffset, position)
             while offset < end {
+                // Per buffer, not only per file: one big file (Docker's are hundreds of
+                // MB) shouldn't stay throttled after Install.
+                priority.update()
                 try checkCancelled()
                 let count = Int(min(UInt64(buffer.count), end - offset))
                 let window = UnsafeMutableRawBufferPointer(rebasing: buffer[0..<count])
@@ -228,19 +233,43 @@ final class Writer: Sendable {
 
     /// Final mode, then times: setting a mode or xattr doesn't touch mtime, but writing
     /// does, so this is always the last thing done to an item.
+    ///
+    /// The creation and modification times go on in one `fsetattrlist`: set apart, an
+    /// mtime older than the creation time can pull the creation time back with it (HFS+
+    /// does that for `utimes`), and source trees often have exactly that.
     private func finish(_ item: PlannedItem, fd: Int32) throws {
         let mode = item.entry.mode & Self.permissionMask
         guard fchmod(fd, mode_t(mode)) == 0 else {
             throw ExtractorError.io(errno: errno, operation: "chmod", path: item.path)
         }
-        guard let time = item.entry.modificationTime else { return }
-        let times = [
-            timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)),
-            timespec(tv_sec: Int(time.seconds), tv_nsec: Int(time.nanoseconds)),
-        ]
-        guard futimens(fd, times) == 0 else {
-            throw ExtractorError.io(errno: errno, operation: "futimens", path: item.path)
+        let modified = item.entry.modificationTime
+        guard let created = item.entry.creationTime else {
+            guard let modified else { return }
+            let times = [timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)), Self.posixTime(modified)]
+            guard futimens(fd, times) == 0 else {
+                throw ExtractorError.io(errno: errno, operation: "futimens", path: item.path)
+            }
+            return
         }
+        try Self.setTimes(fd, created: created, modified: modified, path: item.path)
+    }
+
+    /// Sets `ATTR_CMN_CRTIME`, and `ATTR_CMN_MODTIME` when given, in one call. The
+    /// attribute buffer holds the values in bitmap order: creation, then modification.
+    static func setTimes(_ fd: Int32, created: Entry.Timestamp, modified: Entry.Timestamp?, path: String) throws {
+        var list = attrlist()
+        list.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        list.commonattr = attrgroup_t(ATTR_CMN_CRTIME) | (modified == nil ? 0 : attrgroup_t(ATTR_CMN_MODTIME))
+        var values = [posixTime(created)]
+        if let modified { values.append(posixTime(modified)) }
+        let result = values.withUnsafeMutableBytes {
+            fsetattrlist(fd, &list, $0.baseAddress, $0.count, 0)
+        }
+        guard result == 0 else { throw ExtractorError.io(errno: errno, operation: "setattrlist", path: path) }
+    }
+
+    private static func posixTime(_ time: Entry.Timestamp) -> timespec {
+        timespec(tv_sec: Int(time.seconds), tv_nsec: Int(time.nanoseconds))
     }
 
     // MARK: - Helpers
@@ -277,17 +306,5 @@ final class Writer: Sendable {
         progress?(StageProgress(bytesDone: bytesDone.load(ordering: .relaxed), bytesTotal: totalBytes))
     }
 
-    /// Throttles this thread's disk I/O in background mode, so staging while the popup
-    /// shows never slows what the user is doing. Returns the policy to restore.
-    private func applyIOPolicy() -> Int32? {
-        guard options.priority == .background else { return nil }
-        let previous = getiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD)
-        setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE)
-        return previous
-    }
-
-    private func restoreIOPolicy(_ previous: Int32?) {
-        guard let previous, previous >= 0 else { return }
-        setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, previous)
-    }
+    private var isBackground: Bool { options.priority == .background }
 }

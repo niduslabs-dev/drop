@@ -1,5 +1,6 @@
 import DMGReader
 import Foundation
+import ReaderCore
 import Testing
 
 @testable import Extractor
@@ -33,8 +34,12 @@ private func normalizedXattrs(_ xattrs: [String: [UInt8]]) -> [String: [UInt8]] 
     return out
 }
 
-/// Every difference between two trees, as readable lines.
-func differences(reference: [BytePath: DiskItem], extracted: [BytePath: DiskItem]) -> [String] {
+/// Every difference between two trees, as readable lines. `creationTimes` are the
+/// reader's, by the same paths; every extracted item must carry exactly its one.
+func differences(
+    reference: [BytePath: DiskItem], extracted: [BytePath: DiskItem], creationTimes: [BytePath: Entry.Timestamp],
+    dittoClamped: inout Int
+) -> [String] {
     var out: [String] = []
     for path in Set(reference.keys).subtracting(extracted.keys).sorted() { out.append("missing \(path)") }
     for path in Set(extracted.keys).subtracting(reference.keys).sorted() { out.append("extra \(path)") }
@@ -59,6 +64,24 @@ func differences(reference: [BytePath: DiskItem], extracted: [BytePath: DiskItem
             "mtime \(want.mtime.tv_sec).\(want.mtime.tv_nsec) vs \(got.mtime.tv_sec).\(got.mtime.tv_nsec)",
             want.kind == .symlink
                 || (want.mtime.tv_sec == got.mtime.tv_sec && want.mtime.tv_nsec == got.mtime.tv_nsec))
+        if let time = creationTimes[path] {
+            check(
+                "crtime \(got.crtime.tv_sec).\(got.crtime.tv_nsec) vs reader \(time.seconds).\(time.nanoseconds)",
+                got.crtime.tv_sec == time.seconds && got.crtime.tv_nsec == Int(time.nanoseconds))
+        } else {
+            out.append("\(path): reader has no creation time")
+        }
+        // ditto keeps a creation date only up to the mtime: where the image's is older
+        // (checked on the mounted Slack and GIMP images), its copy shows the mtime instead.
+        // Anything else is a real difference. Symlinks get the copy's time, as with mtime.
+        let sameCreation = want.crtime.tv_sec == got.crtime.tv_sec && want.crtime.tv_nsec == got.crtime.tv_nsec
+        let clamped =
+            want.crtime.tv_sec == want.mtime.tv_sec && want.crtime.tv_nsec == want.mtime.tv_nsec
+            && (got.crtime.tv_sec, got.crtime.tv_nsec) < (got.mtime.tv_sec, got.mtime.tv_nsec)
+        if !sameCreation && clamped { dittoClamped += 1 }
+        check(
+            "crtime \(want.crtime.tv_sec).\(want.crtime.tv_nsec) vs \(got.crtime.tv_sec).\(got.crtime.tv_nsec)",
+            want.kind == .symlink || sameCreation || clamped)
         if want.kind == .file && want.nlink > 1 { refGroups[want.inode, default: []].insert(path) }
         if got.kind == .file && got.nlink > 1 { extGroups[got.inode, default: []].insert(path) }
     }
@@ -100,11 +123,18 @@ struct CorpusFidelityTests {
         want[BytePath("")] = try diskItem(copy.path)
         var got = try snapshot(staged.url)
         got[BytePath("")] = try diskItem(staged.url.path)
-        let problems = differences(reference: want, extracted: got)
+        var creationTimes: [BytePath: Entry.Timestamp] = [BytePath(""): app.creationTime].compactMapValues { $0 }
+        try DMGReader.walk(image.fileSystem, from: app) { path, entry in
+            creationTimes[BytePath(path.joined(separator: "/"))] = entry.creationTime
+        }
+        var dittoClamped = 0
+        let problems = differences(
+            reference: want, extracted: got, creationTimes: creationTimes, dittoClamped: &dittoClamped)
         let (refStatus, refOutput) = try codesignVerify(copy)
         let (gotStatus, gotOutput) = try codesignVerify(staged.url)
         print(
             "corpus \(name): \(got.count) items, \(String(format: "%.2f", seconds)) s, \(problems.count) differences,"
+                + " \(dittoClamped) creation dates ditto clamped to the mtime,"
                 + " codesign reference=\(refStatus) extracted=\(gotStatus)")
         for line in problems.prefix(15) { print("  \(line)") }
         #expect(problems.isEmpty, "\(name): \(problems.count) differences, first: \(problems.prefix(10))")

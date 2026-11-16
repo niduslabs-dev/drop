@@ -13,6 +13,8 @@ struct Inode: Sendable {
     let mode: UInt16
     /// `mod_time`: nanoseconds since 1970-01-01 UTC.
     let modificationTime: UInt64
+    /// `create_time`: nanoseconds since 1970-01-01 UTC.
+    let creationTime: UInt64
     /// Logical size from the `INO_EXT_TYPE_DSTREAM` field; 0 when there is none.
     let size: UInt64
     /// The name from `INO_EXT_TYPE_NAME` (one of the names, for a hard link).
@@ -222,6 +224,7 @@ public final class APFSVolume: FileSystem, Sendable {
             bsdFlags: try data.le32(base + Format.Inode.bsdFlags),
             mode: try data.le16(base + Format.Inode.mode),
             modificationTime: try data.le64(base + Format.Inode.modificationTime),
+            creationTime: try data.le64(base + Format.Inode.creationTime),
             size: size,
             name: name)
     }
@@ -242,7 +245,8 @@ public final class APFSVolume: FileSystem, Sendable {
             size: kind == .directory ? 0 : inode.size,
             isCompressed: kind == .file ? try isCompressed(inode) : false,
             isHardLink: kind == .file && inode.linkCount > 1,
-            modificationTime: Self.timestamp(inode.modificationTime))
+            modificationTime: Self.timestamp(inode.modificationTime),
+            creationTime: Self.timestamp(inode.creationTime))
     }
 
     private static let nanosecondsPerSecond: UInt64 = 1_000_000_000

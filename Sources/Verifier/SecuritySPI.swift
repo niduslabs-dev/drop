@@ -8,8 +8,8 @@ import Security
 /// header years ago but is still exported from Security.framework and listed in its `.tbd`.
 /// `SecStaticCodeCancelValidation` is private API that stops a running
 /// `SecStaticCodeCheckValidity` from another thread. Both are found with `dlsym` and called
-/// through `@convention(c)` types, so a missing symbol degrades (no assessment, or no early
-/// cancel) instead of failing to load. The signatures match Apple's open-source
+/// through `@convention(c)` types, so a missing symbol degrades (`assess` falls back to
+/// `spctl`, or no early cancel) instead of failing to load. The signatures match Apple's open-source
 /// `Security/OSX/libsecurity_codesigning/lib/SecAssessment.h` and `SecStaticCodePriv.h`.
 enum SecuritySPI {
     typealias AssessmentCreate =

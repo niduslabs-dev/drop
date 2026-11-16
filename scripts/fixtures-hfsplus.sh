@@ -158,13 +158,27 @@ def xattrs(path):
     size = libc.listxattr(path.encode(), buf, size, 1)
     return sorted(n.decode() for n in buf.raw[:size].split(b"\0") if n)
 
+class _AttrList(ctypes.Structure):
+    _fields_ = [("bitmapcount", ctypes.c_ushort), ("reserved", ctypes.c_ushort), ("commonattr", ctypes.c_uint32),
+                ("volattr", ctypes.c_uint32), ("dirattr", ctypes.c_uint32), ("fileattr", ctypes.c_uint32),
+                ("forkattr", ctypes.c_uint32)]
+libc.getattrlist.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+def birthtime(p):
+    # ATTR_CMN_CRTIME with FSOPT_NOFOLLOW: [seconds, nanoseconds], which os.lstat's float would round.
+    import struct
+    al = _AttrList(5, 0, 0x200, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(64)
+    if libc.getattrlist(os.fsencode(p), ctypes.byref(al), buf, 64, 1) != 0: return None
+    return list(struct.unpack_from("<qq", buf.raw, 4))
+
 def walk(dir, rel):
     for name in sorted(os.listdir(dir)):
         p = os.path.join(dir, name)
         r = rel + [name]
         st = os.lstat(p)
         e = {"path": "/".join(r), "mode": st.st_mode & 0o7777, "xattrs": xattrs(p),
-             "compressed": bool(st.st_flags & UF_COMPRESSED), "nlink": st.st_nlink, "ino": st.st_ino}
+             "compressed": bool(st.st_flags & UF_COMPRESSED), "nlink": st.st_nlink, "ino": st.st_ino,
+             "birthtime": birthtime(p)}
         if stat.S_ISLNK(st.st_mode):
             e.update(kind="symlink", target=os.readlink(p))
         elif stat.S_ISDIR(st.st_mode):

@@ -37,6 +37,7 @@ struct DiskItem {
     let inode: UInt64
     let nlink: UInt16
     let mtime: timespec
+    let crtime: timespec
     let blocks: Int64
 }
 
@@ -92,7 +93,7 @@ func diskItem(_ path: String) throws -> DiskItem {
     return DiskItem(
         kind: kind, mode: UInt16(info.st_mode & 0o7777), size: kind == .file ? UInt64(info.st_size) : 0,
         sha256: digest, target: target, xattrs: try readXattrs(path), inode: info.st_ino, nlink: info.st_nlink,
-        mtime: info.st_mtimespec, blocks: info.st_blocks)
+        mtime: info.st_mtimespec, crtime: info.st_birthtimespec, blocks: info.st_blocks)
 }
 
 /// The kernel tags every file a process writes with `com.apple.provenance`, so extracted
@@ -164,7 +165,7 @@ struct RootAsApp: FileSystem {
             let real = try base.root
             return Entry(
                 id: real.id, name: rootName, kind: .directory, mode: real.mode, size: 0,
-                modificationTime: real.modificationTime)
+                modificationTime: real.modificationTime, creationTime: real.creationTime)
         }
     }
     func children(of directory: Entry) throws -> [Entry] {
@@ -236,19 +237,24 @@ final class FakeBuilder {
 
     @discardableResult
     func directory(
-        _ name: String, in parent: UInt64? = nil, mode: UInt16 = 0o755, time: Entry.Timestamp? = nil
+        _ name: String, in parent: UInt64? = nil, mode: UInt16 = 0o755, time: Entry.Timestamp? = nil,
+        created: Entry.Timestamp? = nil
     ) -> Entry {
-        add(Entry(id: newID(), name: name, kind: .directory, mode: mode, size: 0, modificationTime: time), parent)
+        add(
+            Entry(
+                id: newID(), name: name, kind: .directory, mode: mode, size: 0, modificationTime: time,
+                creationTime: created), parent)
     }
 
     @discardableResult
     func file(
         _ name: String, in parent: UInt64? = nil, contents: [UInt8], mode: UInt16 = 0o644,
-        xattrs: [String: XattrValue] = [:], time: Entry.Timestamp? = nil, compressed: Bool = false
+        xattrs: [String: XattrValue] = [:], time: Entry.Timestamp? = nil, created: Entry.Timestamp? = nil,
+        compressed: Bool = false
     ) -> Entry {
         let entry = Entry(
             id: newID(), name: name, kind: .file, mode: mode, size: UInt64(contents.count),
-            isCompressed: compressed, modificationTime: time)
+            isCompressed: compressed, modificationTime: time, creationTime: created)
         var node = FakeFileSystem.Node(entry: entry, xattrs: xattrs)
         if !contents.isEmpty {
             node.extents = [Extent(fileOffset: 0, deviceOffset: UInt64(data.count), length: UInt64(contents.count))]
@@ -268,7 +274,7 @@ final class FakeBuilder {
         let linked = { (name: String) in
             Entry(
                 id: file.id, name: name, kind: .file, mode: file.mode, size: file.size, isHardLink: true,
-                modificationTime: file.modificationTime)
+                modificationTime: file.modificationTime, creationTime: file.creationTime)
         }
         for (id, node) in nodes {
             nodes[id]?.children = node.children.map { $0.id == file.id ? linked($0.name) : $0 }
@@ -277,9 +283,14 @@ final class FakeBuilder {
     }
 
     @discardableResult
-    func symlink(_ name: String, in parent: UInt64? = nil, target: String, time: Entry.Timestamp? = nil) -> Entry {
+    func symlink(
+        _ name: String, in parent: UInt64? = nil, target: String, time: Entry.Timestamp? = nil,
+        created: Entry.Timestamp? = nil
+    ) -> Entry {
         var node = FakeFileSystem.Node(
-            entry: Entry(id: newID(), name: name, kind: .symlink, mode: 0o755, size: 0, modificationTime: time))
+            entry: Entry(
+                id: newID(), name: name, kind: .symlink, mode: 0o755, size: 0, modificationTime: time,
+                creationTime: created))
         node.target = target
         return add(node, parent)
     }

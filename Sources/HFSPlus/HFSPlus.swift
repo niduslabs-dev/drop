@@ -402,7 +402,7 @@ public struct HFSPlusVolume: FileSystem {
             let folder = try CatalogFolder(record)
             return Entry(
                 id: UInt64(folder.folderID), name: name, kind: .directory, mode: folder.mode, size: 0,
-                modificationTime: folder.modificationTime)
+                modificationTime: folder.modificationTime, creationTime: folder.creationTime)
         case RecordType.file:
             let file = try CatalogFile(record)
             if file.isFileHardLink {
@@ -412,7 +412,8 @@ public struct HFSPlusVolume: FileSystem {
                 let target = try CatalogFile(try catalogRecord(inode))
                 return Entry(
                     id: UInt64(inode), name: name, kind: target.kind, mode: target.mode, size: try checkedSize(target),
-                    isCompressed: target.isCompressed, isHardLink: true, modificationTime: target.modificationTime)
+                    isCompressed: target.isCompressed, isHardLink: true, modificationTime: target.modificationTime,
+                    creationTime: target.creationTime)
             }
             if file.isDirectoryHardLink {
                 guard let folderID = directoryInodes[file.linkTarget] else {
@@ -421,11 +422,12 @@ public struct HFSPlusVolume: FileSystem {
                 let folder = try CatalogFolder(try catalogRecord(folderID))
                 return Entry(
                     id: UInt64(folderID), name: name, kind: .directory, mode: folder.mode, size: 0, isHardLink: true,
-                    modificationTime: folder.modificationTime)
+                    modificationTime: folder.modificationTime, creationTime: folder.creationTime)
             }
             return Entry(
                 id: UInt64(file.fileID), name: name, kind: file.kind, mode: file.mode, size: try checkedSize(file),
-                isCompressed: file.isCompressed, modificationTime: file.modificationTime)
+                isCompressed: file.isCompressed, modificationTime: file.modificationTime,
+                creationTime: file.creationTime)
         default:
             throw ReaderError.corrupt("catalog record type \(type) where a file or folder was expected")
         }
@@ -614,6 +616,7 @@ struct AttributeKey {
 /// `HFSPlusCatalogFolder` fields.
 struct CatalogFolder {
     static let folderID = 8
+    static let createDate = 12
     static let contentModDate = 16
     static let permissions = 32
     static let finderInfo = 48
@@ -621,12 +624,14 @@ struct CatalogFolder {
     let folderID: UInt32
     let mode: UInt16
     let modificationTime: Entry.Timestamp?
+    let creationTime: Entry.Timestamp?
 
     init(_ record: BTreeRecord) throws {
         let reader = record.reader
         guard record.end - record.dataStart >= Self.size else { throw ReaderError.corrupt("short folder record") }
         folderID = try reader.be32(record.dataStart + Self.folderID)
         modificationTime = HFSDate.timestamp(try reader.be32(record.dataStart + Self.contentModDate))
+        creationTime = HFSDate.timestamp(try reader.be32(record.dataStart + Self.createDate))
         let raw = try reader.be16(record.dataStart + Self.permissions + BSDInfo.fileMode)
         mode = raw & BSDInfo.fileTypeMask == 0 ? BSDInfo.defaultDirectoryMode : raw & BSDInfo.permissionMask
     }
@@ -637,6 +642,7 @@ struct CatalogFolder {
 /// `HFSPlusCatalogFile` fields.
 struct CatalogFile {
     static let fileID = 8
+    static let createDate = 12
     static let contentModDate = 16
     static let permissions = 32
     static let fileType = 48
@@ -659,6 +665,7 @@ struct CatalogFile {
     let dataSize: UInt64
     let dataTotalBlocks: UInt32
     let modificationTime: Entry.Timestamp?
+    let creationTime: Entry.Timestamp?
 
     init(_ record: BTreeRecord) throws {
         reader = record.reader
@@ -666,6 +673,7 @@ struct CatalogFile {
         guard record.end - record.dataStart >= Self.size else { throw ReaderError.corrupt("short file record") }
         fileID = try reader.be32(dataStart + Self.fileID)
         modificationTime = HFSDate.timestamp(try reader.be32(dataStart + Self.contentModDate))
+        creationTime = HFSDate.timestamp(try reader.be32(dataStart + Self.createDate))
         let bsd = dataStart + Self.permissions
         ownerFlags = try reader.u8(bsd + BSDInfo.ownerFlags)
         let rawMode = try reader.be16(bsd + BSDInfo.fileMode)
@@ -823,6 +831,10 @@ enum Limits {
 }
 
 /// HFS+ catalog dates: unsigned seconds since 1904-01-01 00:00 UTC.
+///
+/// Every catalog record's dates (`createDate`, `contentModDate`, root folder included) are
+/// GMT. Only the volume header's `createDate` is local time (TN1150), and the reader
+/// doesn't use it.
 enum HFSDate {
     /// Seconds from the HFS+ epoch (1904) to the Unix epoch (1970).
     static let unixEpochOffset: Int64 = 2_082_844_800

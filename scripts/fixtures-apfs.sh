@@ -57,7 +57,7 @@ detach() {
 }
 
 # Writes a JSON-lines manifest of a tree: path, kind, mode, size, sha256, symlink target,
-# xattr names with sizes and hashes, BSD flags, link count and inode.
+# xattr names with sizes and hashes, BSD flags, link count, inode and creation time.
 manifest() {
     python3 -I - "$1" "$2" <<'PY'
 import ctypes, hashlib, json, os, stat, sys
@@ -81,6 +81,18 @@ def xattrs(p):
         data = val.raw[:max(got, 0)]
         res[name.decode()] = {'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
     return res
+class _AttrList(ctypes.Structure):
+    _fields_ = [("bitmapcount", ctypes.c_ushort), ("reserved", ctypes.c_ushort), ("commonattr", ctypes.c_uint32),
+                ("volattr", ctypes.c_uint32), ("dirattr", ctypes.c_uint32), ("fileattr", ctypes.c_uint32),
+                ("forkattr", ctypes.c_uint32)]
+libc.getattrlist.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+def birthtime(p):
+    # ATTR_CMN_CRTIME with FSOPT_NOFOLLOW: [seconds, nanoseconds], which os.lstat's float would round.
+    import struct
+    al = _AttrList(5, 0, 0x200, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(64)
+    if libc.getattrlist(os.fsencode(p), ctypes.byref(al), buf, 64, 1) != 0: return None
+    return list(struct.unpack_from("<qq", buf.raw, 4))
 rows = []
 for dirpath, dirs, files in os.walk(root):
     dirs.sort(); files.sort()
@@ -93,7 +105,7 @@ for dirpath, dirs, files in os.walk(root):
         else: kind = 'other'
         row = {'path': rel, 'kind': kind, 'mode': st.st_mode & 0o7777, 'size': st.st_size if kind == 'file' else 0,
                'flags': st.st_flags, 'nlink': st.st_nlink, 'ino': st.st_ino, 'blocks': st.st_blocks,
-               'xattrs': xattrs(p)}
+               'xattrs': xattrs(p), 'birthtime': birthtime(p)}
         if kind == 'file':
             h = hashlib.sha256()
             with open(p, 'rb') as f:

@@ -16,4 +16,9 @@ public enum ExtractorError: Error, Sendable, Equatable {
     /// The new app is in place, but handing the old copy to `trash` failed. The old copy
     /// is still at `oldCopy`, inside the staging area; discard the area or retry.
     case trashFailed(oldCopy: String, reason: String)
+    /// Names in one folder of the app that the staging volume would treat as the same
+    /// name (differing only by case or Unicode normalisation on a case-insensitive
+    /// volume, or only by normalisation on a case-sensitive one). `paths` are from the
+    /// app's name down, sorted, every name of each colliding group. Nothing was written.
+    case nameCollision(paths: [String], volumeIsCaseSensitive: Bool)
 }

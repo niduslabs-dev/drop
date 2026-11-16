@@ -25,7 +25,7 @@ public struct Verdict: Sendable, Equatable {
         /// No signature at all.
         case unsigned
         /// The signature is valid but Gatekeeper couldn't be asked (timed out, likely
-        /// offline with no stapled ticket, or the API is missing).
+        /// offline with no stapled ticket, or both the API and `spctl` failed).
         case notarizationUnknown
     }
 

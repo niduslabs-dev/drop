@@ -27,11 +27,15 @@ struct StagePlan: Sendable {
     /// Throws `ReaderError.corrupt` for unsafe names (empty, `.`, `..`, containing `/` or
     /// NUL), devices, sockets and FIFOs, a directory reached twice, and symlink targets
     /// with NUL; `ReaderError.compressedFile` with the item's path for decmpfs files.
-    static func make(app: Entry, from fileSystem: any FileSystem) throws -> StagePlan {
+    ///
+    /// Then throws `ExtractorError.nameCollision` when two names in one folder would land
+    /// on the same name under `rules`, before anything is written.
+    static func make(app: Entry, from fileSystem: any FileSystem, rules: NameRules) throws -> StagePlan {
         guard app.kind == .directory else { throw ReaderError.corrupt("\(app.name) is not a folder") }
         var plan = StagePlan()
         var firstPathForFile: [UInt64: String] = [:]
         var seenDirectories: Set<UInt64> = []
+        var collisions: [String] = []
         var stack: [PlannedItem] = [PlannedItem(path: try checkedName(app.name), entry: app, depth: 0)]
         while let item = stack.popLast() {
             let entry = item.entry
@@ -44,10 +48,12 @@ struct StagePlan: Sendable {
                     throw ReaderError.corrupt("folders nested deeper than \(maxDepth) at \(item.path)")
                 }
                 plan.directories.append(item)
-                for child in try fileSystem.children(of: entry).reversed() {
+                let children = try fileSystem.children(of: entry)
+                for child in children.reversed() {
                     let path = item.path + "/" + (try checkedName(child.name))
                     stack.append(PlannedItem(path: path, entry: child, depth: item.depth + 1))
                 }
+                collisions += rules.collisions(among: children.map(\.name)).map { item.path + "/" + $0 }
             case .symlink:
                 let target = try fileSystem.symlinkTarget(of: entry)
                 guard !target.isEmpty, !target.utf8.contains(0) else {
@@ -69,6 +75,11 @@ struct StagePlan: Sendable {
                 throw ReaderError.corrupt("\(item.path) is a device, socket or FIFO")
             }
         }
+        if !collisions.isEmpty {
+            throw ExtractorError.nameCollision(
+                paths: collisions.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) },
+                volumeIsCaseSensitive: rules.caseSensitive)
+        }
         return plan
     }
 
@@ -79,5 +90,34 @@ struct StagePlan: Sendable {
             throw ReaderError.corrupt("unsafe name \(name.debugDescription)")
         }
         return name
+    }
+}
+
+/// How the staging volume decides that two names are the same file.
+struct NameRules: Sendable {
+    let caseSensitive: Bool
+
+    /// The staging volume's rules, from `pathconf(_PC_CASE_SENSITIVE)` on a folder in it.
+    /// When the volume won't say, it is taken as case-insensitive, which can only refuse
+    /// more images, never overwrite a file. Every volume is treated as
+    /// normalisation-insensitive: APFS (all variants since macOS 10.13) and HFS+ are, and
+    /// an app holding both spellings of one name isn't worth the risk elsewhere.
+    static func ofVolume(at path: String) -> NameRules {
+        NameRules(caseSensitive: pathconf(path, _PC_CASE_SENSITIVE) == 1)
+    }
+
+    /// The form two names share exactly when the volume treats them as one: NFD, and
+    /// case-folded on a case-insensitive volume. Compared as bytes.
+    func key(_ name: String) -> [UInt8] {
+        let folded = caseSensitive ? name : name.folding(options: [.caseInsensitive], locale: nil)
+        return Array(folded.decomposedStringWithCanonicalMapping.utf8)
+    }
+
+    /// Every name in `names` that shares its key with another, in the given order.
+    func collisions(among names: [String]) -> [String] {
+        guard names.count > 1 else { return [] }
+        var groups: [[UInt8]: [String]] = [:]
+        for name in names { groups[key(name), default: []].append(name) }
+        return names.filter { (groups[key($0)]?.count ?? 0) > 1 }
     }
 }

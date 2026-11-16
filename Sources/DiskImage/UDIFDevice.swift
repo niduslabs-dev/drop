@@ -4,11 +4,15 @@ import Synchronization
 
 /// The whole decoded disk of a UDIF image, with every `blkx` table merged by sector.
 ///
-/// Reads decode only the chunks they touch. Decoded chunks go into a small LRU cache bounded
-/// by bytes (`cacheLimit`), so metadata walks that revisit the same chunks stay fast while
-/// bulk reads can't grow memory. Raw and zero-fill chunks bypass the cache. Two threads that
-/// miss on the same chunk at once both decode it; that wastes a little work but keeps the
-/// lock out of the decode path.
+/// Reads decode only the chunks they need, and never one chunk twice at once: a reader that
+/// needs a chunk another thread is decoding waits for it. Decoded chunks go into a cache
+/// bounded by bytes (`cacheLimit`), so metadata walks that revisit the same chunks stay fast
+/// while bulk reads can't grow memory. Raw and zero-fill chunks bypass the cache.
+///
+/// A read spanning several compressed chunks decodes them in parallel, and a sequential
+/// reader (each read starting where the last ended) gets the next `readAheadBytes` decoded
+/// ahead of it on a worker pool the device owns. `decodePolicy` bounds the decoders across
+/// all reader threads and sets their priority; see `DecodeScheduler` for the cache policy.
 ///
 /// For bulk extraction, decode chunks in parallel with `decodeAll(maxConcurrency:_:)` or
 /// your own scheduler over `chunks` and `decodeChunk(_:)`: chunks are independent.
@@ -32,13 +36,13 @@ public final class UDIFDevice: BlockDevice {
     public let cacheLimit: Int
 
     private let file: any BlockDevice
-    private let cache: Mutex<ChunkCache>
+    private let scheduler: DecodeScheduler
 
     /// `file` is the `.dmg` itself. `chunks` need not be sorted; overlapping chunks or chunks
     /// past `size` throw `corrupt`.
     init(
         file: any BlockDevice, size: UInt64, tables: [BlockTable], chunks unsorted: [Chunk],
-        cacheLimit: Int = UDIFDevice.defaultCacheLimit
+        cacheLimit: Int = UDIFDevice.defaultCacheLimit, decodePolicy: DecodePolicy = .fast
     ) throws {
         let sorted = unsorted.sorted { $0.deviceOffset < $1.deviceOffset }
         var chunks: [Chunk] = []
@@ -65,8 +69,23 @@ public final class UDIFDevice: BlockDevice {
         self.tables = tables
         self.chunks = chunks
         self.cacheLimit = cacheLimit
-        self.cache = Mutex(ChunkCache(limit: cacheLimit))
+        self.scheduler = DecodeScheduler(chunks: chunks, cacheLimit: cacheLimit, policy: decodePolicy) {
+            [file] chunk in try Self.decode(chunk, from: file)
+        }
     }
+
+    /// How reads decode compressed chunks: decoder count, QoS and read-ahead depth. Safe to
+    /// change from any thread while reads run; it applies to chunks not yet started. The
+    /// default is `.fast`; background staging sets `.background` and Install sets `.fast`.
+    public var decodePolicy: DecodePolicy {
+        get { scheduler.decodePolicy }
+        set { scheduler.decodePolicy = newValue }
+    }
+
+    /// Read-path decode counters, for tests.
+    var decodeStats: DecodeStats { scheduler.decodeStats }
+
+    func resetDecodeStats() { scheduler.resetDecodeStats() }
 
     // MARK: Reading
 
@@ -76,6 +95,12 @@ public final class UDIFDevice: BlockDevice {
         var position = offset
         var done = 0
         var index = chunkIndex(containingOrAfter: position)
+        if buffer.count > 0 {
+            let last = min(chunkIndex(containingOrAfter: end - 1), chunks.count - 1)
+            if index <= last, chunks[index...last].contains(where: { !$0.type.isZeroFill && $0.type != .raw }) {
+                scheduler.plan(first: index, last: last)
+            }
+        }
         while done < buffer.count {
             let remaining = buffer.count - done
             let out = UnsafeMutableRawBufferPointer(rebasing: buffer[done...])
@@ -100,7 +125,7 @@ public final class UDIFDevice: BlockDevice {
             case .raw:
                 try file.read(at: chunk.fileOffset + within, into: target)
             default:
-                let decoded = try cachedChunk(chunk)
+                let decoded = try scheduler.bytes(of: chunk.index)
                 decoded.withUnsafeBytes { bytes in
                     target.copyMemory(from: UnsafeRawBufferPointer(rebasing: bytes[Int(within)..<Int(within) + take]))
                 }
@@ -113,13 +138,15 @@ public final class UDIFDevice: BlockDevice {
 
     /// Decodes one chunk into a new array of `chunk.length` bytes, without the cache.
     /// Zero-fill chunks return zeros; prefer skipping them.
-    public func decodeChunk(_ chunk: Chunk) throws -> [UInt8] {
+    public func decodeChunk(_ chunk: Chunk) throws -> [UInt8] { try Self.decode(chunk, from: file) }
+
+    private static func decode(_ chunk: Chunk, from file: any BlockDevice) throws -> [UInt8] {
         guard chunk.length <= Self.maxDecodedChunkSize else {
             throw ReaderError.corrupt("chunk at \(chunk.deviceOffset) too large to decode whole")
         }
         var output = [UInt8](repeating: 0, count: Int(chunk.length))
         if chunk.type.isZeroFill { return output }
-        let input = try storedBytes(of: chunk)
+        let input = try storedBytes(of: chunk, in: file)
         try input.withUnsafeBytes { source in
             try output.withUnsafeMutableBytes { try Decoders.decode(chunk.type, input: source, output: $0) }
         }
@@ -177,7 +204,7 @@ public final class UDIFDevice: BlockDevice {
         }
     }
 
-    private func storedBytes(of chunk: Chunk) throws -> [UInt8] {
+    private static func storedBytes(of chunk: Chunk, in file: any BlockDevice) throws -> [UInt8] {
         guard chunk.fileLength <= Self.maxDecodedChunkSize * 2 else {
             throw ReaderError.corrupt("chunk at \(chunk.deviceOffset) stores \(chunk.fileLength) bytes")
         }
@@ -186,13 +213,6 @@ public final class UDIFDevice: BlockDevice {
         } catch ReaderError.outOfBounds {
             throw ReaderError.corrupt("chunk at \(chunk.deviceOffset) points past the file")
         }
-    }
-
-    private func cachedChunk(_ chunk: Chunk) throws -> [UInt8] {
-        if let hit = cache.withLock({ $0.get(chunk.index) }) { return hit }
-        let decoded = try decodeChunk(chunk)
-        cache.withLock { $0.put(chunk.index, decoded) }
-        return decoded
     }
 
     /// The first chunk whose end is past `offset`.
@@ -238,11 +258,18 @@ struct ChunkCache: ~Copyable {
         return node.bytes
     }
 
+    func contains(_ key: Int) -> Bool { nodes[key] != nil }
+
     mutating func put(_ key: Int, _ bytes: [UInt8]) {
         guard bytes.count <= limit else { return }
         if nodes[key] != nil { unlink(key) }
         pushNewest(key, bytes)
-        while total > limit, let victim = oldest { unlink(victim) }
+        trim(to: limit)
+    }
+
+    /// Evicts the oldest entries until at most `bytes` remain.
+    mutating func trim(to bytes: Int) {
+        while total > bytes, let victim = oldest { unlink(victim) }
     }
 
     private mutating func pushNewest(_ key: Int, _ bytes: [UInt8]) {
