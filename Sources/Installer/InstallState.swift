@@ -7,11 +7,11 @@ import Verifier
 /// What the panel shows for one DMG, in the order a session moves through it:
 ///
 /// ```
-/// reading ─▶ needsLicence ─▶ preparing ─▶ ready ───────────▶ installing ─▶ installed
+/// reading ─▶ needsLicence ─▶ (needsPassword) ─▶ preparing ─▶ ready ───────────▶ installing ─▶ installed
 ///    │            │           ▲   │      ├▶ warning ──(install)─▶ installing
 ///    │            │           ▼   │      └▶ refused
 ///    │            │     waitingToPrepare ──(install)─▶ installing
-///    ├▶ cannotInstall / needsMountFallback / failed (from reading or preparing)
+///    ├▶ cannotInstall / failed (from reading or preparing)
 ///    └─ cancel() or decline() from any state before installed ─▶ cancelled
 /// ```
 ///
@@ -22,6 +22,12 @@ import Verifier
 ///
 /// `preparing` and `waitingToPrepare` swap as Low Power Mode or thermal pressure comes and
 /// goes (`InstallOptions.conditions`); both show the same panel with Install enabled.
+///
+/// An image Drop can't read itself (`ReaderError.wantsMountFallback`: encrypted, sparse, an
+/// unknown compression, decmpfs files) takes the hidden mount through the same states: the
+/// licence (when the container's plist is readable), `needsPassword` for an encrypted image,
+/// then `preparing` onwards from the mounted volume. The image is detached as soon as the
+/// app is staged, and on cancel or any failure.
 public enum InstallState: Sendable, Equatable {
     /// Opening the image and reading its catalog. Usually under 0.1 s.
     case reading
@@ -46,10 +52,10 @@ public enum InstallState: Sendable, Equatable {
     /// Not something Drop installs (a package, several apps, none), or an image that
     /// doesn't open at all. The panel offers "Open disk image" or Installer instead.
     case cannotInstall(CannotInstallReason)
-    /// The image is valid but Drop can't read it itself (encrypted, sparse, an unknown
-    /// compression, a decmpfs file). `InstallOptions.mountFallback` was told; the hidden
-    /// mount is a later step.
-    case needsMountFallback(ReaderError)
+    /// The image is encrypted: `providePassword(_:)` attaches it (hidden), `cancel()` ends
+    /// the session. `attempt` starts at 1 and goes up after each wrong password, so the
+    /// panel can say "Wrong password. Try again."
+    case needsPassword(attempt: Int)
     /// Install was clicked: finishing staging at full speed, then moving into place.
     case installing(AppSummary, InstallProgress)
     case installed(URL)
@@ -59,8 +65,9 @@ public enum InstallState: Sendable, Equatable {
     /// True when the session will never change state again.
     public var isFinal: Bool {
         switch self {
-        case .installed, .cancelled, .failed, .refused, .cannotInstall, .needsMountFallback: true
-        case .reading, .needsLicence, .preparing, .waitingToPrepare, .ready, .warning, .installing: false
+        case .installed, .cancelled, .failed, .refused, .cannotInstall: true
+        case .reading, .needsLicence, .needsPassword, .preparing, .waitingToPrepare, .ready, .warning, .installing:
+            false
         }
     }
 }
@@ -123,6 +130,12 @@ public enum CannotInstallReason: Sendable, Equatable {
     case nameCollision(paths: [String])
     /// The image is damaged or not a disk image at all.
     case unreadable(String)
+    /// Drop can't read the image and macOS wouldn't attach it either (the hidden mount's
+    /// error, for diagnostics). The panel offers "Open disk image".
+    case wontAttach(String)
+    /// The image has a licence agreement Drop couldn't show before attaching (its container
+    /// isn't readable), and Drop never accepts one unseen. "Open disk image" lets macOS show it.
+    case licenceNotShown
 }
 
 /// Why a session stopped with `failed`.
@@ -149,4 +162,7 @@ public struct InstallTimings: Sendable, Equatable {
     public var verified: Double?
     /// When `install()` boosted a stage in progress.
     public var boosted: Double?
+    /// Hidden mount only: when the image was attached, and when it was detached again.
+    public var mounted: Double?
+    public var unmounted: Double?
 }

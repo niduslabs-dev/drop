@@ -106,6 +106,24 @@ public protocol FileSystem: Sendable {
     /// bookkeeping attributes; includes `com.apple.decmpfs` and resource forks
     /// (`com.apple.ResourceFork`) so callers can see them.
     func xattrs(of entry: Entry) throws -> [String: XattrValue]
+    /// Fills `buffer` with `file`'s data-fork bytes starting at `fileOffset`, a range that
+    /// lies inside `extent` (one of `extents(of: file)`, not a hole).
+    ///
+    /// Every byte the extractor and `contents(of:)` copy goes through here. The default reads
+    /// `device` at the extent's device offset, which is right for any filesystem parsed from a
+    /// `BlockDevice`. A filesystem with no device of its own (a mounted volume, read through
+    /// the kernel) implements it directly and reports extents that only describe file ranges.
+    func readData(
+        of file: Entry, in extent: Extent, at fileOffset: UInt64, into buffer: UnsafeMutableRawBufferPointer
+    ) throws
+}
+
+extension FileSystem {
+    public func readData(
+        of file: Entry, in extent: Extent, at fileOffset: UInt64, into buffer: UnsafeMutableRawBufferPointer
+    ) throws {
+        try device.read(at: extent.deviceOffset + (fileOffset - extent.fileOffset), into: buffer)
+    }
 }
 
 /// The largest file `FileSystem.contents(of:)` reads into memory. App metadata such as
@@ -132,7 +150,7 @@ extension FileSystem {
             try out.withUnsafeMutableBytes { all in
                 let slice = UnsafeMutableRawBufferPointer(
                     rebasing: all[Int(extent.fileOffset)..<Int(extent.fileOffset) + length])
-                try device.read(at: extent.deviceOffset, into: slice)
+                try readData(of: file, in: extent, at: extent.fileOffset, into: slice)
             }
         }
         return out
@@ -160,7 +178,7 @@ extension FileSystem {
                 if extent.isHole {
                     window.initializeMemory(as: UInt8.self, repeating: 0)
                 } else {
-                    try device.read(at: extent.deviceOffset + (offset - extent.fileOffset), into: window)
+                    try readData(of: file, in: extent, at: offset, into: window)
                 }
                 try body(offset, UnsafeRawBufferPointer(window))
                 offset += UInt64(count)

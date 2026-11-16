@@ -13,18 +13,10 @@ public struct OpenedImage: Sendable {
 
     /// Top-level `.app` bundles, the things Drop can install. Symlinks (such as the usual
     /// `Applications` shortcut) and hidden items are skipped.
-    public func apps() throws -> [Entry] {
-        try fileSystem.children(of: fileSystem.root).filter {
-            $0.kind == .directory && $0.name.hasSuffix(".app") && !$0.name.hasPrefix(".")
-        }
-    }
+    public func apps() throws -> [Entry] { try DMGReader.apps(in: fileSystem) }
 
     /// Top-level installer packages, which Drop hands to Installer instead.
-    public func packages() throws -> [Entry] {
-        try fileSystem.children(of: fileSystem.root).filter {
-            ($0.name.hasSuffix(".pkg") || $0.name.hasSuffix(".mpkg")) && !$0.name.hasPrefix(".")
-        }
-    }
+    public func packages() throws -> [Entry] { try DMGReader.packages(in: fileSystem) }
 }
 
 public enum DMGReader {
@@ -61,6 +53,21 @@ public enum DMGReader {
             for child in try fileSystem.children(of: entry).reversed() {
                 stack.append((path + [child.name], child, depth + 1))
             }
+        }
+    }
+
+    /// Top-level `.app` bundles of any filesystem (an image's, or a hidden mount's).
+    /// Symlinks (such as the usual `Applications` shortcut) and hidden items are skipped.
+    public static func apps(in fileSystem: any FileSystem) throws -> [Entry] {
+        try fileSystem.children(of: fileSystem.root).filter {
+            $0.kind == .directory && $0.name.hasSuffix(".app") && !$0.name.hasPrefix(".")
+        }
+    }
+
+    /// Top-level installer packages, which Drop hands to Installer instead.
+    public static func packages(in fileSystem: any FileSystem) throws -> [Entry] {
+        try fileSystem.children(of: fileSystem.root).filter {
+            ($0.name.hasSuffix(".pkg") || $0.name.hasSuffix(".mpkg")) && !$0.name.hasPrefix(".")
         }
     }
 

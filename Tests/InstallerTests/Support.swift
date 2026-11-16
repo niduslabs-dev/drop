@@ -6,10 +6,15 @@ import Testing
 
 @testable import Extractor
 @testable import Installer
+@testable import Mounter
 
 /// The package root, from this file's path.
 let packageRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+
+/// Hidden mounts made by tests go here, apart from the app's own `HiddenMount.defaultRoot`.
+let testMountRoot = FileManager.default.temporaryDirectory.appending(
+    path: "dev.niduslabs.drop.mounts-installer-tests", directoryHint: .isDirectory)
 
 let corpusEnabled = ProcessInfo.processInfo.environment["DROP_CORPUS"] == "1"
 
@@ -40,11 +45,15 @@ struct Scratch {
     let root: URL
     let destination: URL
     let trash: URL
+    /// This test's own folder for hidden mounts. Suites run in parallel, so checks for
+    /// leftover mounts look only here, never at other tests' mounts.
+    let mountRoot: URL
 
     init(_ label: String) throws {
         root = packageRoot.appending(path: ".build/installer-tests/\(label)-\(UUID().uuidString)")
         destination = root.appending(path: "Applications")
         trash = root.appending(path: "Trash")
+        mountRoot = testMountRoot.appending(path: root.lastPathComponent, directoryHint: .isDirectory)
         for folder in [destination, trash] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
@@ -64,9 +73,11 @@ struct Scratch {
     ) -> InstallOptions {
         var hook: (@Sendable (URL, ReaderError) -> Void)?
         if let mountFallback { hook = { _, reason in mountFallback.record(reason) } }
-        return InstallOptions(
+        var options = InstallOptions(
             destination: destination, backgroundDecodePolicy: policy.policy, skipFirstLaunchPrompt: skipPrompt,
             trash: trashItem, mountFallback: hook, conditions: .unconstrained)
+        options.mountRoot = mountRoot
+        return options
     }
 
     func trashed() -> [String] {
@@ -77,7 +88,15 @@ struct Scratch {
         ((try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? []).sorted()
     }
 
-    func remove() { Extractor.removeTree(root.path) }
+    /// Images still attached under this test's mount folder.
+    var leftovers: [(device: String, mountPoint: String)] {
+        HiddenMount.attachedImages(mountedUnder: mountRoot)
+    }
+
+    func remove() {
+        Extractor.removeTree(root.path)
+        try? FileManager.default.removeItem(at: mountRoot)
+    }
 }
 
 enum DecodePolicyChoice {
@@ -140,7 +159,7 @@ extension InstallState {
     var isPreparing: Bool { if case .preparing = self { true } else { false } }
     var isSettled: Bool {
         switch self {
-        case .ready, .warning, .needsLicence: true
+        case .ready, .warning, .needsLicence, .needsPassword: true
         default: isFinal
         }
     }

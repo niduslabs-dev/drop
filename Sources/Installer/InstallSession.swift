@@ -3,6 +3,7 @@ import DiskImage
 import Dispatch
 import Extractor
 import Foundation
+import Mounter
 import Synchronization
 import Verifier
 
@@ -25,8 +26,8 @@ public struct InstallOptions: Sendable {
     /// Moves the replaced copy on an update to the Trash. The app passes
     /// `FileManager.trashItem`; tests pass a folder of their own.
     public var trash: @Sendable (URL) throws -> Void
-    /// Told when the image needs the hidden mount. For now it only reports; the session
-    /// then ends in `needsMountFallback`.
+    /// Told when the session falls back to the hidden mount, with the reader's reason. For
+    /// diagnostics only; the session carries on by itself.
     public var mountFallback: (@Sendable (_ dmg: URL, _ reason: ReaderError) -> Void)?
     /// Low Power Mode and thermal pressure: while constrained, a background session waits
     /// in `waitingToPrepare` instead of staging. `.system` in the app; tests inject their own.
@@ -39,6 +40,11 @@ public struct InstallOptions: Sendable {
     /// and start again at user-initiated rather than wait for it. A running check's thread
     /// can't be raised from outside, and Code Signing's hashing inherits its QoS.
     public var reissuesVerificationOnBoost: Bool
+    /// Where hidden mounts go: `HiddenMount.defaultRoot` in the app; tests use their own,
+    /// so a test sweep never touches the app's mounts.
+    public var mountRoot: URL = HiddenMount.defaultRoot
+    /// For timing tests: take the hidden mount even for an image the reader handles.
+    var forceMountFallback = false
     /// The signature check. Tests replace it to hold a check open; the app never does.
     var verify: @Sendable (_ app: URL, _ qos: DispatchQoS.QoSClass) async -> Verdict = {
         await Verifier.verdict(app: $0, qos: $1)
@@ -104,6 +110,12 @@ public actor InstallSession {
     private var runTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
     private var licenceAnswer: CheckedContinuation<Bool, Never>?
+    /// The user agreed to the licence Drop showed; the hidden mount may then answer the
+    /// attach tool's licence prompt.
+    private var licenceAccepted = false
+    private var passwordAnswer: CheckedContinuation<MountPassword?, Never>?
+    /// The hidden mount while the image is attached.
+    private(set) var mount: HiddenMount?
     /// Set once the user clicked Install; `run` installs as soon as the verdict allows.
     private var installRequested = false
     private var summary: AppSummary?
@@ -143,6 +155,18 @@ public actor InstallSession {
     /// Declines the licence: the session ends `cancelled` with nothing written.
     public func decline() { answerLicence(false) }
 
+    /// Answers `needsPassword`: attaches the encrypted image with it. A wrong one comes back
+    /// as `needsPassword` with the next attempt number. The password is zeroed once the
+    /// attach tool has read it. Does nothing in any other state.
+    public func providePassword(_ password: MountPassword) {
+        guard case .needsPassword = state, let answer = passwordAnswer else { return }
+        passwordAnswer = nil
+        answer.resume(returning: password)
+    }
+
+    /// `providePassword(_:)` from a string, for a text field's value.
+    public func providePassword(_ password: String) { providePassword(MountPassword(password)) }
+
     /// Installs. While preparing, this boosts staging to full speed and installs once the
     /// app is staged and checked (unless the check ends in a warning or refusal: see
     /// `InstallState`). In `warning` it is Install Anyway. Elsewhere it does nothing.
@@ -179,6 +203,7 @@ public actor InstallSession {
         job.resume()
         wakeUnconstrainedWaiters()
         answerLicence(false)
+        answerPassword(nil)
         runTask?.cancel()
         await runTask?.value
         await installTask?.value
@@ -187,6 +212,13 @@ public actor InstallSession {
             await Self.discard(staged.area)
         }
         if !state.isFinal { state = .cancelled }
+    }
+
+    /// Returns once the pipeline has stopped, including the hidden mount's detach, which
+    /// runs just after the final state is published.
+    public func waitUntilDone() async {
+        await runTask?.value
+        await installTask?.value
     }
 
     /// The popup's Not now: the same as `cancel()`.
@@ -198,6 +230,7 @@ public actor InstallSession {
     // MARK: - The pipeline
 
     private func run() async {
+        if options.forceMountFallback { return await runMounted(.unsupportedContainer("forced by the options")) }
         let opened: OpenedImage
         let app: Entry
         do {
@@ -210,15 +243,97 @@ public actor InstallSession {
             if let licence = opened.image.licence {
                 state = .needsLicence(licence)
                 guard await waitForLicence() else { return finishCancelled() }
+                licenceAccepted = true
             }
             guard !stopFlag.isSet else { return finishCancelled() }
-            guard let chosen = try chooseApp(in: opened) else { return }
+            guard let chosen = try chooseApp(in: opened.fileSystem) else { return }
+            app = chosen
+        } catch let error as ReaderError where error.wantsMountFallback {
+            return await runMounted(error)
+        } catch {
+            return finish(with: error)
+        }
+        await prepareAndStage(app, from: opened.fileSystem, udif: opened.image.udif)
+    }
+
+    /// The hidden-mount fallback: licence (when readable), password (when encrypted),
+    /// attach, then the same staging and check as the direct path. The image is detached
+    /// once staged, and whatever happens before then, when this returns.
+    private func runMounted(_ reason: ReaderError) async {
+        options.mountFallback?(dmg, reason)
+        await attachAndStage()
+        await detachMount()
+    }
+
+    private func attachAndStage() async {
+        let path = dmg.path
+        if !licenceAccepted,
+            let licence = try? await Self.onThread(qos: .utility, { try DiskImage.licence(atPath: path) })
+        {
+            state = .needsLicence(licence)
+            guard await waitForLicence() else { return finishCancelled() }
+            licenceAccepted = true
+        }
+        let encrypted = DiskImage.isEncrypted(path: path)
+        let image = dmg
+        let root = options.mountRoot
+        let accepted = licenceAccepted
+        var attempt = 0
+        let mount: HiddenMount
+        while true {
+            guard !stopFlag.isSet else { return finishCancelled() }
+            var password: MountPassword?
+            if encrypted {
+                attempt += 1
+                state = .needsPassword(attempt: attempt)
+                guard let given = await waitForPassword(), !stopFlag.isSet else { return finishCancelled() }
+                password = given
+                state = .reading
+            }
+            do {
+                let secret = password
+                mount = try await Self.onThread(qos: isFast ? .userInitiated : .utility) {
+                    defer { secret?.wipe() }
+                    return try HiddenMount.attach(image, password: secret, licenceAccepted: accepted, root: root)
+                }
+                break
+            } catch MountError.wrongPassword where encrypted {
+                continue
+            } catch MountError.licenceNotShown {
+                state = .cannotInstall(.licenceNotShown)
+                return
+            } catch {
+                state = .cannotInstall(.wontAttach(String(describing: error)))
+                return
+            }
+        }
+        self.mount = mount
+        timings.mounted = elapsed()
+        timings.opened = timings.opened ?? timings.mounted
+        guard !stopFlag.isSet else { return finishCancelled() }
+        let app: Entry
+        let fileSystem: MountedFileSystem
+        do {
+            fileSystem = try await Self.onThread(qos: .utility) { try mount.fileSystem() }
+            guard let chosen = try chooseApp(in: fileSystem) else { return }
             app = chosen
         } catch {
             return finish(with: error)
         }
+        await prepareAndStage(app, from: fileSystem, udif: nil)
+    }
 
-        let fileSystem = opened.fileSystem
+    /// Detaches the hidden mount, if one is attached. A detach that fails even when forced
+    /// leaves the image to `HiddenMount.sweepLeftoverMounts()` at the next launch.
+    private func detachMount() async {
+        guard let mount else { return }
+        self.mount = nil
+        _ = try? await Self.onThread(qos: .utility) { try mount.detach() }
+        timings.unmounted = elapsed()
+    }
+
+    /// Staging, the check and the verdict, from whichever filesystem holds the app.
+    private func prepareAndStage(_ app: Entry, from fileSystem: any FileSystem, udif: UDIFDevice?) async {
         let destination = options.destination
         let dmgURL = dmg
         let prepared: Prepared
@@ -246,12 +361,20 @@ public actor InstallSession {
 
         let staged: StagedApp
         do {
-            staged = try await stage(app, from: opened, into: prepared.area, quarantine: prepared.quarantine)
+            staged = try await stage(
+                app, from: fileSystem, udif: udif, into: prepared.area, quarantine: prepared.quarantine)
+        } catch let error as ReaderError where error.wantsMountFallback && mount == nil {
+            // A decmpfs file found while planning: nothing was written yet.
+            conditionsTask?.cancel()
+            conditionsTask = nil
+            return await runMounted(error)
         } catch {
             return finish(with: error)
         }
         self.staged = staged
         timings.staged = elapsed()
+        // The staged copy is complete: the image isn't needed for the check or the install.
+        await detachMount()
         await waitUntilUnconstrained()
         guard !stopFlag.isSet else { return finishCancelled() }
 
@@ -368,22 +491,22 @@ public actor InstallSession {
     }
 
     /// The single top-level app, or nil after setting `cannotInstall`.
-    private func chooseApp(in opened: OpenedImage) throws -> Entry? {
-        let apps = try opened.apps()
+    private func chooseApp(in fileSystem: any FileSystem) throws -> Entry? {
+        let apps = try DMGReader.apps(in: fileSystem)
         if apps.count == 1, let app = apps.first { return app }
         if apps.count > 1 {
             state = .cannotInstall(.multipleApps(names: apps.map(\.name).sorted()))
             return nil
         }
-        let packages = try opened.packages()
+        let packages = try DMGReader.packages(in: fileSystem)
         state = .cannotInstall(packages.isEmpty ? .noApp : .packageOnly(names: packages.map(\.name).sorted()))
         return nil
     }
 
     private func stage(
-        _ app: Entry, from opened: OpenedImage, into area: StagingArea, quarantine: String?
+        _ app: Entry, from fileSystem: any FileSystem, udif device: UDIFDevice?, into area: StagingArea,
+        quarantine: String?
     ) async throws -> StagedApp {
-        let device = opened.image.udif
         self.device = device
         let background = options.stagingPriority == .background && !job.isBoosted
         device?.decodePolicy = background ? options.backgroundDecodePolicy : .fast
@@ -395,7 +518,6 @@ public actor InstallSession {
             quarantine: quarantine, priority: options.stagingPriority, isCancelled: { stop.isSet }, job: job,
             onBoost: { device?.decodePolicy = .fast }, uncachedBackgroundWrites: options.uncachedBackgroundWrites,
             backgroundWriteRate: options.backgroundWriteRate)
-        let fileSystem = opened.fileSystem
         return try await Self.onThread(qos: background ? .background : .userInitiated) {
             try Extractor.stage(app: app, from: fileSystem, into: area, options: stageOptions) { progress in
                 guard throttle.shouldEmit(progress) else { return }
@@ -446,9 +568,8 @@ public actor InstallSession {
             finishCancelled()
         case ExtractorError.nameCollision(let paths, _):
             state = .cannotInstall(.nameCollision(paths: paths))
-        case let error as ReaderError where error.wantsMountFallback:
-            options.mountFallback?(dmg, error)
-            state = .needsMountFallback(error)
+        case let error as MountError:
+            state = .cannotInstall(.wontAttach(String(describing: error)))
         case let error as ReaderError:
             state = .cannotInstall(.unreadable(String(describing: error)))
         default:
@@ -463,6 +584,17 @@ public actor InstallSession {
     private func waitForLicence() async -> Bool {
         guard !stopFlag.isSet else { return false }
         return await withCheckedContinuation { licenceAnswer = $0 }
+    }
+
+    private func waitForPassword() async -> MountPassword? {
+        guard !stopFlag.isSet else { return nil }
+        return await withCheckedContinuation { passwordAnswer = $0 }
+    }
+
+    private func answerPassword(_ password: MountPassword?) {
+        guard let answer = passwordAnswer else { return }
+        passwordAnswer = nil
+        answer.resume(returning: password)
     }
 
     private func answerLicence(_ accepted: Bool) {

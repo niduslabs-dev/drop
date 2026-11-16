@@ -138,12 +138,12 @@ struct InstallSessionFixtureTests {
         // Raw bytes with no partition map or filesystem: either verdict is acceptable, but
         // never a crash, a hang or a staged copy.
         switch final {
-        case .cannotInstall(.unreadable), .needsMountFallback: break
+        case .cannotInstall(.unreadable), .cannotInstall(.wontAttach): break
         default: Issue.record("unexpected \(final)")
         }
     }
 
-    @Test func encryptedImageAsksForTheMountFallback() async throws {
+    @Test func encryptedImageAsksForAPassword() async throws {
         try #require(
             FileManager.default.fileExists(atPath: Fixtures.encrypted.path), "run scripts/fixtures-diskimage.sh")
         let scratch = try Scratch("encrypted")
@@ -151,8 +151,10 @@ struct InstallSessionFixtureTests {
         let spy = MountFallbackSpy()
         let session = InstallSession(dmg: Fixtures.encrypted, options: scratch.options(mountFallback: spy))
         await session.start()
-        #expect(await waitFor(session) { $0.isFinal } == .needsMountFallback(.encrypted))
+        #expect(await waitFor(session) { $0.isSettled } == .needsPassword(attempt: 1))
         #expect(spy.recorded == [.encrypted])
+        await session.cancel()
+        #expect(await session.state == .cancelled)
     }
 
     @Test func notNowDeletesTheStagedCopy() async throws {

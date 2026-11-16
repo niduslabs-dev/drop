@@ -193,7 +193,7 @@ final class Writer: Sendable {
                 let count = Int(min(UInt64(buffer.count), end - offset))
                 if !priority.isFast, let pacer { try pace(count, with: pacer, priority: &priority) }
                 let window = UnsafeMutableRawBufferPointer(rebasing: buffer[0..<count])
-                try fileSystem.device.read(at: extent.deviceOffset + (offset - extent.fileOffset), into: window)
+                try fileSystem.readData(of: entry, in: extent, at: offset, into: window)
                 try writeAll(fd, UnsafeRawBufferPointer(window), at: offset, path: item.path)
                 offset += UInt64(count)
                 written += UInt64(count)

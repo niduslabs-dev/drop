@@ -11,8 +11,9 @@ A Swift package (`Package.swift`), no Xcode project yet:
 - `HFSPlus`, `APFS`: read-only filesystems over a `BlockDevice`.
 - `DMGReader`: opens a `.dmg` and returns its filesystem. `dmg-inspect`: a CLI over it.
 - `Extractor`: stages an app out of a `FileSystem` (4 workers, POSIX writes, xattrs, quarantine with the do-not-translocate flag) and installs it by rename or atomic swap.
+- `Mounter`: the hidden-mount fallback for images the readers can't handle (encrypted, sparse, unknown compression, decmpfs). `HiddenMount` attaches with `diskutil image attach --readOnly --nobrowse` at a 0700 folder under `$TMPDIR/dev.niduslabs.drop.mounts`, detaches by device node (`diskutil eject`, then `force`), and `sweepLeftoverMounts()` clears that folder after a crash. `MountedFileSystem` reads the volume as a `FileSystem` (POSIX, never following symlinks) so the Extractor stages from it unchanged. Measurements and licence behaviour: `.claude/research/hidden-mount.md`.
 - `Verifier`: signing info, strict validation, Gatekeeper assessment, the `Verdict` the panel shows, same-developer check, and stapling a DMG's ticket into an app. Use the `async` overloads from tasks; the sync ones stall under Swift concurrency.
-- `Installer`: `InstallSession`, the actor the app drives per DMG: reading → licence → background staging and check → ready/warning/refused → install. States in `InstallState.swift`. In Low Power Mode or at a serious thermal state it waits in `waitingToPrepare` (`StagingConditions`, injectable). Install boosts staging, its calling thread and the signature check (cancelled and reissued at user-initiated).
+- `Installer`: `InstallSession`, the actor the app drives per DMG: reading → licence → (password, hidden mount) → background staging and check → ready/warning/refused → install. The hidden mount is detached as soon as the app is staged, and on cancel or failure. States in `InstallState.swift`. In Low Power Mode or at a serious thermal state it waits in `waitingToPrepare` (`StagingConditions`, injectable). Install boosts staging, its calling thread and the signature check (cancelled and reissued at user-initiated).
 - `drop-impact`: the background-impact benchmark's load and staging processes, run by `.claude/research/scripts/impact_bench.py` (results in `.claude/research/impact-bench.md`).
 
 ## Commands
@@ -21,7 +22,8 @@ Homebrew's LLVM env breaks Xcode builds, so build through `scripts/swift.sh`, wh
 
 ```sh
 scripts/swift.sh build
-scripts/swift.sh test                 # unit tests; fixtures first: scripts/fixtures-*.sh (installer after verifier)
+scripts/swift.sh test                 # unit tests; fixtures first: scripts/fixtures-*.sh (installer and mount after verifier)
+DROP_TIMING=1 scripts/swift.sh test --filter MountFallbackTimingTests   # hidden mount vs direct path
 scripts/corpus.sh                     # also the 34 real DMGs in .claude/samples/ (makes and deletes 4.4 GB of reference copies)
 scripts/swift.sh run dmg-inspect <file.dmg> [--tree]
 ```
@@ -30,5 +32,5 @@ scripts/swift.sh run dmg-inspect <file.dmg> [--tree]
 
 - **Format and lint with Apple's `swift format`** (ships with Xcode, nothing to install or pin), configured by `.swift-format`: `swift format --in-place --recursive Sources Tests Package.swift`, then `swift format lint --strict --recursive Sources Tests Package.swift`. Decided 2026-11-16 over SwiftFormat and SwiftLint.
 - **Every on-disk read is bounds-checked** through `ByteReader`; a corrupt image throws `ReaderError.corrupt`, never crashes or hangs.
-- **Images are untrusted input.** Tests never mount. Scripts that mount use `hdiutil attach -nobrowse -noautoopen -mountrandom` and detach by device node: `-readonly` for anything downloaded; read-write only for a fixture image the script just created itself (to add compressed, fragmented or case-only files hdiutil won't copy).
+- **Images are untrusted input.** Tests never mount, except through `HiddenMount` in `MounterTests` and the installer's mount-fallback tests: only the fixtures from `scripts/fixtures-mount.sh` (and samples in opt-in runs), read-only, under a test-only root, each checked to leave nothing attached. Scripts that mount use `hdiutil attach -nobrowse -noautoopen -mountrandom` and detach by device node: `-readonly` for anything downloaded; read-write only for a fixture image the script just created itself (to add compressed, fragmented or case-only files hdiutil won't copy).
 - **No package dependencies** beyond the system libraries (libz, libbz2, Compression).

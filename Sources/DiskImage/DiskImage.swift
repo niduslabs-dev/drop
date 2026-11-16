@@ -106,6 +106,43 @@ public struct DiskImage: Sendable {
             codeSignature: trailer.codeSignature)
     }
 
+    /// The licence agreement of the image at `path`, read from the UDIF trailer's plist alone.
+    ///
+    /// For the hidden-mount fallback: an image Drop can't decode (an unknown compression, say)
+    /// still has a readable plist, and Drop shows its licence before attaching, because the
+    /// attach tool would otherwise have to accept it unseen. Nil when the image has no
+    /// licence; throws when the container can't be read at all (encrypted, sparse, no
+    /// trailer), so the caller knows it couldn't check.
+    public static func licence(atPath path: String) throws -> LicenceAgreement? {
+        let file = try FileDevice(path: path)
+        guard !(try isEncrypted(file)), file.size >= UInt64(UDIFTrailer.size),
+            let trailer = try UDIFTrailer(
+                try file.read(at: file.size - UInt64(UDIFTrailer.size), count: UDIFTrailer.size), fileSize: file.size),
+            trailer.xmlLength > 0, trailer.xmlLength <= maxPlistSize
+        else { throw ReaderError.unsupportedContainer("no readable UDIF plist") }
+        let plistBytes = try file.read(at: trailer.xmlOffset, count: Int(trailer.xmlLength))
+        guard !plistBytes.starts(with: binaryPlistMagic) else {
+            throw ReaderError.unsupportedContainer("binary property list block map")
+        }
+        return try LicenceAgreement(resources: try parseResources(plistBytes))
+    }
+
+    /// True when the file at `path` is an encrypted disk image (`encrcdsa` or `cdsaencr`),
+    /// which the hidden mount can only attach with a password.
+    public static func isEncrypted(path: String) -> Bool {
+        guard let file = try? FileDevice(path: path) else { return false }
+        return (try? isEncrypted(file)) ?? false
+    }
+
+    private static func isEncrypted(_ file: FileDevice) throws -> Bool {
+        let size = file.size
+        let head = try file.read(at: 0, count: Int(min(size, UInt64(encryptedV2Magic.count))))
+        if head == encryptedV2Magic { return true }
+        guard size >= UInt64(encryptedV1Magic.count) else { return false }
+        return try file.read(at: size - UInt64(encryptedV1Magic.count), count: encryptedV1Magic.count)
+            == encryptedV1Magic
+    }
+
     /// The disk's partition map.
     public func partitionMap() throws -> PartitionMap { try PartitionMap.read(from: device) }
 

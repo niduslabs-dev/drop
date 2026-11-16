@@ -14,6 +14,8 @@ import PackageDescription
 ///   writes, xattrs, quarantine), then moves it into place.
 /// - `Verifier`: signature, Team ID and notarization of a staged app, and stapling the
 ///   DMG's notarization ticket into an app that has none.
+/// - `Mounter`: the hidden-mount fallback for images the readers can't handle: attaches
+///   read-only and invisibly at a private mount point and reads the volume as a `FileSystem`.
 /// - `Installer`: the pipeline the app drives: one `InstallSession` per DMG, from reading
 ///   through the licence, background staging and the check to the final rename.
 let package = Package(
@@ -36,12 +38,13 @@ let package = Package(
         .target(name: "APFS", dependencies: ["ReaderCore"]),
         .target(name: "DMGReader", dependencies: ["ReaderCore", "DiskImage", "HFSPlus", "APFS"]),
         .target(name: "Extractor", dependencies: ["ReaderCore"]),
+        .target(name: "Mounter", dependencies: ["ReaderCore"]),
         .target(
             name: "Verifier",
             dependencies: ["ReaderCore", "DiskImage"],
             linkerSettings: [.linkedFramework("Security")]
         ),
-        .target(name: "Installer", dependencies: ["DMGReader", "DiskImage", "Extractor", "Verifier"]),
+        .target(name: "Installer", dependencies: ["DMGReader", "DiskImage", "Extractor", "Mounter", "Verifier"]),
         .executableTarget(name: "DMGInspect", dependencies: ["DMGReader", "Extractor", "Verifier"]),
         .executableTarget(name: "DropImpact", dependencies: ["Installer", "DiskImage", "Extractor"]),
         .testTarget(name: "ReaderCoreTests", dependencies: ["ReaderCore"]),
@@ -50,8 +53,10 @@ let package = Package(
         .testTarget(name: "APFSTests", dependencies: ["APFS", "DiskImage"]),
         .testTarget(name: "DMGReaderTests", dependencies: ["DMGReader"]),
         .testTarget(name: "ExtractorTests", dependencies: ["Extractor", "DMGReader"]),
+        .testTarget(name: "MounterTests", dependencies: ["Mounter", "Extractor"]),
         .testTarget(name: "VerifierTests", dependencies: ["Verifier", "DMGReader", "Extractor"]),
         .testTarget(
-            name: "InstallerTests", dependencies: ["Installer", "DMGReader", "DiskImage", "Extractor", "Verifier"]),
+            name: "InstallerTests",
+            dependencies: ["Installer", "DMGReader", "DiskImage", "Extractor", "Mounter", "Verifier"]),
     ]
 )

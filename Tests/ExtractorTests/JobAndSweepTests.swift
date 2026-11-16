@@ -261,7 +261,11 @@ import Testing
         let burst = buffer * options.workerCount
         let expected = Double(Self.fileCount * Self.fileSize - burst) / Double(rate)
         #expect(elapsed >= expected * 0.9, "\(elapsed) s, expected about \(expected) s")
-        #expect(elapsed <= expected * 1.5 + 0.3, "\(elapsed) s, expected about \(expected) s")
+        // Background-QoS workers are starved on purpose under load, so the upper bound only
+        // holds on a quiet machine; corpus runs load every core and get a looser one.
+        let heavyLoad = ProcessInfo.processInfo.environment["DROP_CORPUS"] == "1"
+        let slack = heavyLoad ? 3.0 : 1.5
+        #expect(elapsed <= expected * slack + 0.3, "\(elapsed) s, expected about \(expected) s")
     }
 
     @Test func boostLiftsPacing() throws {
