@@ -43,7 +43,6 @@ final class Preferences {
         static let openAfterInstall = "openAfterInstall"
         static let skipFirstOpenPrompt = "skipFirstOpenPrompt"
         static let openAtLogin = "openAtLogin"
-        static let keepInMenuBar = "keepInMenuBar"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -60,7 +59,6 @@ final class Preferences {
     }
     /// "Open Drop at login". Off until the user opts in, on onboarding's login page or here.
     var openAtLogin: Bool { didSet { defaults.set(openAtLogin, forKey: Key.openAtLogin) } }
-    var keepInMenuBar: Bool { didSet { defaults.set(keepInMenuBar, forKey: Key.keepInMenuBar) } }
 
     /// "Open disk images with Drop". Not stored: it mirrors Launch Services, which the user
     /// can change in Finder, so Settings re-reads it (`DiskImageHandler.isDropDefault`).
@@ -70,7 +68,7 @@ final class Preferences {
         self.defaults = defaults
         defaults.register(defaults: [
             Key.askOnNewImage: true, Key.trashImage: true, Key.openAfterInstall: false,
-            Key.skipFirstOpenPrompt: false, Key.openAtLogin: false, Key.keepInMenuBar: false,
+            Key.skipFirstOpenPrompt: false, Key.openAtLogin: false,
         ])
         askOnNewImage = defaults.bool(forKey: Key.askOnNewImage)
         let downloads =
@@ -83,7 +81,6 @@ final class Preferences {
         openAfterInstall = defaults.bool(forKey: Key.openAfterInstall)
         skipFirstOpenPrompt = defaults.bool(forKey: Key.skipFirstOpenPrompt)
         openAtLogin = defaults.bool(forKey: Key.openAtLogin)
-        keepInMenuBar = defaults.bool(forKey: Key.keepInMenuBar)
     }
 }
 
@@ -159,7 +156,7 @@ final class Store {
     }
 }
 
-/// One row of Recently installed (menu) and Recent (Settings).
+/// One row of Settings' Recent list.
 struct RecentInstall: Codable, Hashable, Sendable, Identifiable {
     let name: String
     let version: String?

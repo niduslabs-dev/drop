@@ -3,16 +3,16 @@ import Installer
 import Mounter
 import UniformTypeIdentifiers
 
-/// Drives one `InstallSession` per DMG and shows its panel. DMGs that arrive while a
-/// panel is up wait in a queue: one panel at a time, and only the shown one is read and
-/// staged, so several downloads never stage at once in the background.
+/// Drives one `InstallSession` per DMG and shows its panel: the popup for a watched download,
+/// the centred window for an opened image. DMGs that arrive while a panel is up wait in a
+/// queue: one panel at a time, and only the shown one is read and staged, so several
+/// downloads never stage at once in the background.
 @MainActor
 final class InstallController {
     private let preferences: Preferences
     private let store: Store
     private let launch: LaunchOptions
     private let panel: PanelWindowController
-    private let statusItem: StatusItemController
 
     private var queue: [(url: URL, origin: PanelModel.Origin)] = []
     private var current: PanelModel?
@@ -22,16 +22,25 @@ final class InstallController {
     /// Images attached for Open Installer; kept until Installer quits or Drop does.
     private var installerMounts: [HiddenMount] = []
     private var installerObserver: NSObjectProtocol?
+    /// When board 2 first showed for the current model, for `Theme.Motion.installingHold`.
+    private var installingShownAt: ContinuousClock.Instant?
 
-    init(
-        preferences: Preferences, store: Store, launch: LaunchOptions, panel: PanelWindowController,
-        statusItem: StatusItemController
-    ) {
+    init(preferences: Preferences, store: Store, launch: LaunchOptions, panel: PanelWindowController) {
         self.preferences = preferences
         self.store = store
         self.launch = launch
         self.panel = panel
-        self.statusItem = statusItem
+        panel.onDismiss = { [weak self] model in self?.handle(Self.dismissAction(for: model.board), for: model) }
+    }
+
+    /// What Esc and the window's close button mean on each board.
+    private static func dismissAction(for board: Board) -> PanelAction {
+        switch board {
+        case .done, .refused: .close
+        case .installing: .cancelInstall
+        case .licence: .disagreeLicence
+        default: .notNow
+        }
     }
 
     /// The destination folder: `--destination` in tests, else the chosen location.
@@ -41,7 +50,7 @@ final class InstallController {
 
     /// A DMG to offer. Files already handled (installed, Not now) are ignored when they
     /// come from the watcher; an explicit open (Open With, a double-click when Drop is the
-    /// default, Install from Disk Image…) always asks.
+    /// default, a drop on the app icon) always asks.
     func enqueue(_ url: URL, origin: PanelModel.Origin) {
         let url = url.standardizedFileURL
         if case .watched = origin, let file = HandledFile(url: url), store.isHandled(file) { return }
@@ -62,8 +71,11 @@ final class InstallController {
             self.handle(action, for: model)
         }
         current = model
-        statusItem.isBusy = true
+        installingShownAt = nil
         startSession(for: model)
+        // Up at once with the file name and "Reading…"; the boards fill in as the session
+        // reads the image, so the popup never waits for the image to open.
+        panel.show(model)
     }
 
     private func startSession(for model: PanelModel) {
@@ -85,6 +97,11 @@ final class InstallController {
             await session.start()
             for await state in session.updates {
                 guard let self, self.session === session else { return }
+                if case .installed = state, let shown = self.installingShownAt {
+                    let remaining = Theme.Motion.installingHold - (ContinuousClock.now - shown)
+                    if remaining > .zero { try? await Task.sleep(for: remaining) }
+                    guard self.session === session else { return }
+                }
                 self.apply(state, to: model, session: session)
             }
         }
@@ -94,7 +111,12 @@ final class InstallController {
         if case .needsLicence(let licence) = state, !(model.state.isLicence) {
             model.licenceLanguage = LicenceText.initialLanguage(licence)
         }
+        let hadSummary = model.summary != nil
         model.state = state
+        if !hadSummary, model.summary != nil {
+            Log.panel.info("summary shown \(model.dmg.lastPathComponent, privacy: .public)")
+        }
+        if case .installing = state, installingShownAt == nil { installingShownAt = .now }
         refreshRunningApp(for: model)
         switch state {
         case .reading:
@@ -113,7 +135,7 @@ final class InstallController {
             break
         }
         if model.board != .hidden {
-            if panel.model !== model || !panel.isVisible { panel.show(model) }
+            if panel.model !== model { panel.show(model) }
             if model.board == .password { panel.focus() }
         }
     }
@@ -139,7 +161,12 @@ final class InstallController {
     private func handle(_ action: PanelAction, for model: PanelModel) {
         guard model === current else { return }
         switch action {
-        case .install, .installAnyway: install(model)
+        case .install, .installAnyway:
+            if case .reading = model.state {
+                model.installWhenReady = true
+            } else {
+                install(model)
+            }
         case .notNow, .disagreeLicence, .cancelInstall: dismiss(model)
         case .close: finish(model)
         case .openImage:
@@ -290,11 +317,7 @@ final class InstallController {
         session = nil
         current = nil
         panel.close()
-        if queue.isEmpty {
-            statusItem.isBusy = false
-        } else {
-            startNext()
-        }
+        startNext()
     }
 
     // MARK: Open Installer

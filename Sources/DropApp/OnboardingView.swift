@@ -16,10 +16,37 @@ struct OnboardingView: View {
     /// The window's real title bar height, read from the window. The boards' band is taller,
     /// so this only matters if a future macOS makes the title bar taller than the band.
     var titleBarHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: max(Theme.Onboarding.titleBand, titleBarHeight))
+            ZStack {
+                page
+                    .id(coordinator.page)
+                    .transition(pageTransition)
+            }
+            .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.page, value: coordinator.page)
+            .frame(maxHeight: .infinity)
+            footer
+                .padding([.horizontal, .bottom], Theme.onboardingInset)
+        }
+        .frame(width: Theme.Onboarding.width, height: Theme.Onboarding.height)
+        .ignoresSafeArea()
+        .background(SurfaceBackground(kind: .window).ignoresSafeArea())
+        .background(shortcuts)
+    }
+
+    /// The old page blurs and fades out (blur 8, 0.35 s); the new one's elements blur in one
+    /// after another (`staggeredBlurIn`). Reduce Motion: a cross-fade.
+    private var pageTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .asymmetric(insertion: .opacity, removal: .blurFade(radius: Theme.Motion.pageBlur, offsetY: 0))
+    }
+
+    private var page: some View {
+        VStack(spacing: 0) {
             OnboardingArt(page: coordinator.page)
                 .frame(maxWidth: .infinity)
                 .frame(height: Theme.Onboarding.artHeight)
@@ -28,17 +55,12 @@ struct OnboardingView: View {
                 )
                 .padding(.horizontal, Theme.onboardingInset)
                 .accessibilityHidden(true)
+                .staggeredBlurIn(0)
             text
                 .padding(.top, Theme.Onboarding.textTopPadding)
                 .padding(.horizontal, Theme.Onboarding.textHorizontalPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            footer
-                .padding([.horizontal, .bottom], Theme.onboardingInset)
         }
-        .frame(width: Theme.Onboarding.width, height: Theme.Onboarding.height)
-        .ignoresSafeArea()
-        .background(Theme.Colour.controlBackground)
-        .background(shortcuts)
     }
 
     // MARK: Text
@@ -46,18 +68,20 @@ struct OnboardingView: View {
     private var text: some View {
         VStack(spacing: Theme.Onboarding.textSpacing) {
             Text(content.title)
-                .font(Theme.Onboarding.titleFont)
+                .font(Typeface.font(size: Theme.Onboarding.titleSize, weight: Theme.Onboarding.titleWeight))
                 .tracking(Theme.Onboarding.titleTracking)
                 .foregroundStyle(Theme.Colour.bodyText)
                 .accessibilityAddTraits(.isHeader)
+                .staggeredBlurIn(1)
             Text(content.body)
                 .font(Theme.Font.body)
                 .lineSpacing(Theme.Onboarding.bodyLineSpacing)
                 .padding(.vertical, Theme.Onboarding.bodyLineSpacing / 2)
                 .foregroundStyle(Theme.Colour.bodyText)
                 .frame(maxWidth: Theme.Onboarding.bodyMaxWidth)
+                .staggeredBlurIn(2)
             if coordinator.showsFolderDenied {
-                denied
+                denied.staggeredBlurIn(3)
             } else if let info = content.info {
                 Label {
                     Text(info)
@@ -66,12 +90,14 @@ struct OnboardingView: View {
                 }
                 .labelStyle(InfoLabelStyle())
                 .padding(.top, Theme.Onboarding.infoTopPadding)
+                .staggeredBlurIn(3)
             }
             if coordinator.page == .done {
                 Text("A Nidus Labs app. A home for little ideas.")
-                    .font(Theme.Onboarding.bylineFont)
+                    .font(Typeface.font(size: Theme.Onboarding.bylineSize, weight: .regular))
                     .foregroundStyle(Theme.Colour.secondaryText)
                     .padding(.top, Theme.Onboarding.bylineTopPadding)
+                    .staggeredBlurIn(3)
             }
         }
         .multilineTextAlignment(.center)
@@ -88,7 +114,7 @@ struct OnboardingView: View {
             .foregroundStyle(Theme.Colour.secondaryText)
             .frame(maxWidth: Theme.Onboarding.bodyMaxWidth)
             Button("Open System Settings", action: openPrivacySettings)
-                .buttonStyle(LinkButtonStyle(font: Theme.Onboarding.infoFont))
+                .buttonStyle(.nidusLink(font: Theme.Onboarding.infoFont))
         }
         .padding(.top, Theme.Onboarding.infoTopPadding)
     }
@@ -112,21 +138,21 @@ struct OnboardingView: View {
             Button("Choose another folder") {
                 if let url = chooseFolder() { coordinator.useFolder(url) }
             }
-            .buttonStyle(LinkButtonStyle(font: Theme.Onboarding.linkFont))
+            .buttonStyle(.nidusLink(font: Theme.Onboarding.linkFont))
             .padding(.horizontal, Theme.Onboarding.linkPadding)
             if coordinator.showsFolderDenied {
                 Button("Continue anyway") { coordinator.continueWithoutFolder() }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .buttonStyle(.nidusSecondary)
             }
             primary("Allow Downloads") {
                 let folder = folder()
                 Task { await coordinator.allowFolder(folder) }
             }
         case .diskImages:
-            Button("Not now") { coordinator.skipDefaultHandler() }.buttonStyle(SecondaryButtonStyle())
+            Button("Not now") { coordinator.skipDefaultHandler() }.buttonStyle(.nidusSecondary)
             primary("Use Drop") { Task { await coordinator.useDrop() } }
         case .loginItem:
-            Button("Not now") { coordinator.skipLoginItem() }.buttonStyle(SecondaryButtonStyle())
+            Button("Not now") { coordinator.skipLoginItem() }.buttonStyle(.nidusSecondary)
             primary("Start at Login") { coordinator.startAtLogin() }
         case .done:
             primary("Done") { coordinator.finish() }
@@ -135,7 +161,7 @@ struct OnboardingView: View {
 
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
-            .buttonStyle(PrimaryButtonStyle())
+            .buttonStyle(.nidusPrimary)
             .keyboardShortcut(.defaultAction)
     }
 
@@ -172,7 +198,7 @@ struct OnboardingView: View {
             Content(
                 title: "Drop watches your Downloads",
                 body:
-                    "When a disk image finishes downloading, a small panel drops from the menu bar. Click Install and you\u{2019}re done.",
+                    "When a disk image finishes downloading, a small panel slides in at the top right. Click Install and you\u{2019}re done.",
                 info: "macOS will ask you to let Drop read your Downloads folder.")
         case .diskImages:
             Content(
@@ -230,8 +256,7 @@ private struct PageDots: View {
 /// The illustration panel's fill: the boards' `#F5F5F7`, as the tinted-card fill.
 private struct ArtBackground: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> some ShapeStyle {
-        Color.primary.opacity(
-            environment.colorScheme == .dark ? Theme.Card.darkFillOpacity : Theme.Card.fillOpacity)
+        Theme.Colour.infoFill
     }
 }
 
@@ -255,18 +280,12 @@ private struct OnboardingArt: View {
                     .frame(width: Theme.Onboarding.Art.arrowWidth, height: Theme.Onboarding.Art.arrowHeight)
                 ApplicationsFolder(size: Theme.Onboarding.Art.diskImage)
             }
-        case .downloads: MenuBarArt()
+        case .downloads: ScreenCornerArt()
         case .diskImages: BadgedDiskImage()
         case .loginItem: LoginItemsArt()
         case .done:
-            Circle()
-                .fill(Theme.Colour.good)
+            DrawnCheck(lineWidth: Theme.Onboarding.Art.checkStroke)
                 .frame(width: Theme.Onboarding.Art.check, height: Theme.Onboarding.Art.check)
-                .overlay {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: Theme.Onboarding.Art.checkGlyph, weight: .bold))
-                        .foregroundStyle(Theme.Colour.onAccent)
-                }
         }
     }
 }
@@ -297,7 +316,7 @@ private struct DiskImageGlyph: View {
                 $0.addRoundedRect(
                     in: CGRect(x: 10, y: 14, width: 52, height: 44), cornerSize: CGSize(width: 10, height: 10))
             }
-            body.fill(Theme.Colour.controlBackground)
+            body.fill(Theme.Colour.surface)
             body.stroke(Theme.Colour.tertiaryText, lineWidth: Theme.Onboarding.Art.glyphStroke * scale)
             BoardPath(box: glyphBox) {
                 $0.move(to: CGPoint(x: 10, y: 44))
@@ -349,11 +368,12 @@ private struct ApplicationsFolder: View {
             }
             .fill(Self.front)
             BoardPath(box: glyphBox) {
-                $0.move(to: CGPoint(x: 30, y: 34))
-                $0.addLine(to: CGPoint(x: 36, y: 46))
-                $0.addLine(to: CGPoint(x: 42, y: 34))
-                $0.move(to: CGPoint(x: 33, y: 42))
-                $0.addLine(to: CGPoint(x: 39, y: 42))
+                // The "A" mark: apex up, feet down, and its crossbar (SwiftUI's y grows down).
+                $0.move(to: CGPoint(x: 30, y: 46))
+                $0.addLine(to: CGPoint(x: 36, y: 34))
+                $0.addLine(to: CGPoint(x: 42, y: 46))
+                $0.move(to: CGPoint(x: 32, y: 42))
+                $0.addLine(to: CGPoint(x: 40, y: 42))
             }
             .stroke(
                 Theme.Colour.onAccent,
@@ -383,62 +403,56 @@ private struct ArrowShape: Shape {
     }
 }
 
-/// Board 2: the menu bar with Drop's icon, and the panel dropping from it.
-private struct MenuBarArt: View {
+/// Board 2: a screen's top right corner, with the popup there under the menu bar.
+private struct ScreenCornerArt: View {
     private typealias Art = Theme.Onboarding.Art
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: Art.panelSpacing) {
-            HStack(spacing: Art.menuBarPadding) {
-                Spacer(minLength: 0)
-                Image(systemName: "drop")
-                    .font(.system(size: Art.menuIconGlyph, weight: .semibold))
-                    .foregroundStyle(Theme.Colour.bodyText)
-                    .frame(width: Art.menuIconWidth, height: Art.menuIconHeight)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Art.menuIconRadius)
-                            .strokeBorder(Theme.Colour.accent, lineWidth: Art.menuIconRing)
-                            .padding(-Art.menuIconRing)
-                    }
-                bar(width: Art.menuItemWidth, height: Art.bar, colour: muted)
+        RoundedRectangle(cornerRadius: Art.screenRadius)
+            .fill(Color.primary.opacity(Theme.Onboarding.faintOpacity))
+            .overlay(alignment: .top) {
+                Rectangle().fill(Theme.Colour.surface.opacity(Art.screenBarOpacity)).frame(height: Art.screenBar)
             }
-            .padding(.horizontal, Art.menuBarPadding)
-            .frame(width: Art.menuBarWidth, height: Art.menuBarHeight)
-            .background(card(radius: Art.menuBarRadius))
-            HStack(spacing: Art.panelSpacing) {
-                RoundedRectangle(cornerRadius: Art.panelTileRadius)
-                    .fill(Theme.Colour.folder)
-                    .frame(width: Art.panelTile, height: Art.panelTile)
-                VStack(alignment: .leading, spacing: Art.panelLineSpacing) {
-                    bar(width: Art.panelTitleWidth, height: Art.bar, colour: Theme.Colour.bodyText)
-                    bar(width: Art.panelSubtitleWidth, height: Art.thinBar, colour: Theme.Colour.tertiaryText)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                RoundedRectangle(cornerRadius: Art.panelButtonRadius)
-                    .fill(Theme.Colour.accent)
-                    .frame(width: Art.panelButtonWidth, height: Art.panelButtonHeight)
+            .overlay(alignment: .topTrailing) {
+                popup
+                    .padding(.top, Art.popupTop)
+                    .padding(.trailing, Art.popupInset)
             }
-            .padding(Art.panelPadding)
-            .frame(width: Art.panelWidth)
-            .background(card(radius: Art.panelRadius))
-            .shadow(
-                color: .black.opacity(Theme.Onboarding.shadowOpacity), radius: Theme.Onboarding.shadowRadius,
-                y: Theme.Onboarding.shadowY)
-        }
-        .frame(width: Art.menuBarWidth)
+            .clipShape(RoundedRectangle(cornerRadius: Art.screenRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: Art.screenRadius)
+                    .strokeBorder(Color.primary.opacity(Theme.Onboarding.rowDividerOpacity), lineWidth: Art.lineWidth)
+            }
+            .frame(width: Art.screenWidth, height: Art.screenHeight)
     }
 
-    private var muted: Color { Color.primary.opacity(Theme.Onboarding.mutedOpacity) }
-
-    private func bar(width: CGFloat, height: CGFloat, colour: Color) -> some View {
-        Capsule().fill(colour).frame(width: width, height: height)
+    private var popup: some View {
+        HStack(spacing: Art.panelSpacing) {
+            RoundedRectangle(cornerRadius: Art.panelTileRadius)
+                .fill(Art.sampleAppTile)
+                .frame(width: Art.panelTile, height: Art.panelTile)
+            VStack(alignment: .leading, spacing: Art.panelLineSpacing) {
+                Capsule().fill(Theme.Colour.bodyText).frame(width: Art.panelTitleWidth, height: Art.bar)
+                Capsule().fill(Theme.Colour.tertiaryText).frame(width: Art.panelSubtitleWidth, height: Art.thinBar)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Capsule()
+                .fill(Theme.Colour.accent)
+                .frame(width: Art.panelButtonWidth, height: Art.panelButtonHeight)
+        }
+        .padding(Art.panelPadding)
+        .frame(width: Art.panelWidth)
+        .background(card(radius: Art.panelRadius))
+        .shadow(
+            color: .black.opacity(Theme.Onboarding.shadowOpacity), radius: Theme.Onboarding.shadowRadius,
+            y: Theme.Onboarding.shadowY)
     }
 }
 
 /// A white card with the boards' hairline border.
 private func card(radius: CGFloat) -> some View {
     RoundedRectangle(cornerRadius: radius)
-        .fill(Theme.Colour.controlBackground)
+        .fill(Theme.Colour.surface)
         .overlay {
             RoundedRectangle(cornerRadius: radius)
                 .strokeBorder(Color.primary.opacity(Theme.Onboarding.hairlineOpacity))
@@ -474,7 +488,7 @@ private struct BadgedDiskImage: View {
 /// cut-out in both modes.
 private struct ArtRing: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> some ShapeStyle {
-        Theme.Colour.controlBackground.mix(
+        Theme.Colour.surface.mix(
             with: .primary,
             by: environment.colorScheme == .dark ? Theme.Card.darkFillOpacity : Theme.Card.fillOpacity)
     }
@@ -504,7 +518,7 @@ private struct LoginItemsArt: View {
                     .overlay {
                         Image(systemName: "drop")
                             .font(.system(size: Art.listIconGlyph, weight: .bold))
-                            .foregroundStyle(Theme.Colour.controlBackground)
+                            .foregroundStyle(Theme.Colour.surface)
                     }
                 Text("Drop").font(Art.listNameFont).foregroundStyle(Theme.Colour.bodyText)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -532,6 +546,13 @@ private struct LoginItemsArt: View {
 /// The onboarding window: centred, 600×480, a standard titled window with only the close
 /// button enabled, not resizable. Closing it any way other than Done tells the coordinator
 /// it was closed early.
+///
+/// While it's open Drop is a regular app, so it shows in Command-Tab (and, for that time,
+/// in the Dock), and the window floats above other apps' windows so it isn't lost behind
+/// them. macOS's own prompts (the folder access alert, the default-app confirmation) come
+/// from other processes; while a request is running the window drops to the normal level,
+/// so a prompt can never open underneath it. When onboarding ends Drop goes back to an
+/// accessory app with no Dock icon.
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
@@ -559,13 +580,17 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             window.setContentSize(NSSize(width: Theme.Onboarding.width, height: Theme.Onboarding.height))
             window.title = "Welcome to Drop"
             window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
+            window.hidesOnDeactivate = false
+            window.paintsSurfaceUnderTitleBar()
             window.delegate = self
             window.center()
             self.window = window
+            followRequests()
         }
+        NSApp.setActivationPolicy(.regular)
+        window?.level = coordinator.isBusy ? .normal : .floating
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
     }
@@ -576,6 +601,22 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        window?.level = .normal
+        NSApp.setActivationPolicy(.accessory)
         coordinator.windowClosed()
+    }
+
+    /// Normal level while a request (and so possibly a macOS prompt) is running, floating
+    /// otherwise.
+    private func followRequests() {
+        withObservationTracking {
+            _ = coordinator.isBusy
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, let window = self.window, window.isVisible else { return }
+                window.level = self.coordinator.isBusy ? .normal : .floating
+                self.followRequests()
+            }
+        }
     }
 }

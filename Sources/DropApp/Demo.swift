@@ -10,17 +10,18 @@
     /// Vaultr, Ledgerly), no real DMG, so every state can be screenshotted. Debug builds
     /// only. Prints `DEMO_WINDOW <id>` for `screencapture -l`.
     ///
-    /// States: main, preparing, waiting, installing, done, update, update-running, warning,
-    /// unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
-    /// password-wrong, settings, menu, done-long (a 30-character app name), and onboarding
+    /// States: reading, main, preparing, waiting, installing, done, update, update-running,
+    /// warning, unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
+    /// password-wrong, settings, done-long (a 30-character app name), window (board 1 in the
+    /// centred window an opened image gets), and onboarding
     /// pages onboarding-1 to onboarding-5 and onboarding-2-denied (fakes, so no request
     /// reaches macOS; closing the window quits).
     @MainActor
     enum Demo {
         static let states = [
-            "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning", "unsigned",
-            "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
-            "settings", "menu", "done-long", "onboarding-1", "onboarding-2", "onboarding-2-denied", "onboarding-3",
+            "reading", "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning",
+            "unsigned", "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
+            "settings", "done-long", "window", "onboarding-1", "onboarding-2", "onboarding-2-denied", "onboarding-3",
             "onboarding-4", "onboarding-5",
         ]
 
@@ -50,38 +51,14 @@
                 report(app.settings.windowNumber ?? 0)
                 return
             }
-            if state == "menu" {
-                app.statusItem.menuContent = {
-                    .init(
-                        isWatching: true, folderName: "Downloads",
-                        recent: [
-                            RecentInstall(
-                                name: "Linea", version: "2.4.1", path: "/Applications/Linea.app",
-                                date: .now.addingTimeInterval(-120)),
-                            RecentInstall(
-                                name: "Fieldnote", version: "5.0", path: "/Applications/Fieldnote.app",
-                                date: .now.addingTimeInterval(-86_400)),
-                        ])
-                }
-                app.statusItem.keep = true
-                Task {
-                    try? await Task.sleep(for: .milliseconds(500))
-                    print("DEMO_MENU")
-                    fflush(stdout)
-                    app.statusItem.openMenu()
-                }
-                return
-            }
             let model = makeModel(state)
             model.send = { action in
                 if action == .close || action == .notNow { NSApp.terminate(nil) }
             }
-            app.statusItem.isBusy = true
             Task {
-                // Let the new status item get its window and on-screen frame first.
-                try? await Task.sleep(for: .milliseconds(300))
                 app.panel.show(model)
-                try? await Task.sleep(for: .milliseconds(300))
+                // Report once the slide-in and the content's blur have settled.
+                try? await Task.sleep(for: settle)
                 report(app.panel.windowNumber)
             }
         }
@@ -106,10 +83,13 @@
                 } else {
                     coordinator.preview(page)
                 }
-                try? await Task.sleep(for: .milliseconds(300))
+                try? await Task.sleep(for: settle)
                 report(app.onboardingWindow?.windowNumber ?? 0)
             }
         }
+
+        /// Long enough for the popup's spring and the staged reveals to finish.
+        private static let settle: Duration = .milliseconds(2600)
 
         /// Demo onboarding never reads or writes the test domain's state.
         private static let demoSuite = "dev.niduslabs.drop.demo"
@@ -128,11 +108,14 @@
             default: image = "Linea-2.4.1.dmg"
             }
             let model = PanelModel(
-                dmg: URL(filePath: "/Users/Shared/Downloads/\(image)"), origin: .watched(folderName: "Downloads"),
-                location: .applications, trashImage: true)
+                dmg: URL(filePath: "/Users/Shared/Downloads/\(image)"),
+                origin: state == "window" ? .opened : .watched(folderName: "Downloads"), location: .applications,
+                trashImage: true)
             model.iconOverride = .tile(lineaBlue, symbol: "line.diagonal")
             var linea = linea
             switch state {
+            case "reading":
+                model.iconOverride = nil
             case "preparing":
                 var early = linea
                 early.signer = nil

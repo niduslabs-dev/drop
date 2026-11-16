@@ -65,9 +65,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Placeholder icon: the system's generic app icon, until the real one is drawn.
-GENERIC=/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns
-[ -f "$GENERIC" ] && cp "$GENERIC" "$APP/Contents/Resources/AppIcon.icns"
+# Manrope (onboarding headings and the byline), registered at launch by Typeface.swift.
+# Source: github.com/google/fonts, ofl/manrope at commit b31870aff700ab7a1d74fa0c6887d95beb9e0037
+# (2026-09-14), SIL Open Font License 1.1; the licence ships beside it.
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp Resources/Fonts/Manrope-Variable.ttf Resources/Fonts/OFL.txt "$APP/Contents/Resources/Fonts/"
+
+# App icon ("The Slot"): generated in the Nidus Labs assets repo and copied here by
+# scripts/sync-icon.sh, so this repo builds on its own.
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --sign - --options runtime --timestamp=none "$APP"
 codesign --verify --deep --strict "$APP"

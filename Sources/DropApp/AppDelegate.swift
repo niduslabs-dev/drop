@@ -4,10 +4,11 @@ import Mounter
 import Onboarding
 import ServiceManagement
 import SwiftUI
-import UniformTypeIdentifiers
 
-/// Drop's lifecycle: no Dock icon or window (`LSUIElement`), a Downloads watcher, the
-/// temporary menu bar icon and the panel. Opening Drop again while it runs shows Settings.
+/// Drop's lifecycle: no Dock or menu bar icon (`LSUIElement`), a Downloads watcher, the
+/// popup and the centred window. Opening Drop again while it runs shows Settings; pausing
+/// is Settings' Ask switch and quitting is Settings' Quit Drop. Disk images reach Drop by
+/// Open With, a double-click when it's the default, or a drop on its icon in Finder.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Posted by a second copy of Drop that was started while this one runs.
@@ -44,15 +45,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     static let testSuite = "dev.niduslabs.drop.test"
-    private(set) var statusItem: StatusItemController!
     private(set) var panel: PanelWindowController!
     private(set) var controller: InstallController!
     private(set) var settings: SettingsWindowController!
     private var watcher: DownloadsWatcher?
     private(set) var onboarding: OnboardingCoordinator!
     private(set) var onboardingWindow: OnboardingWindowController?
-    /// Pause Watching from the menu: until resumed or Drop restarts.
-    private var isPaused = false
     /// Disk images opened before launch finished (Open With starts Drop with them).
     private var pendingOpens: [URL] = []
     private var isLaunched = false
@@ -63,10 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
             }
         #endif
-        statusItem = StatusItemController(keep: preferences.keepInMenuBar)
-        panel = PanelWindowController(anchor: { [weak self] in self?.statusItem.anchorFrame })
-        controller = InstallController(
-            preferences: preferences, store: store, launch: launch, panel: panel, statusItem: statusItem)
+        Typeface.registerBundledFonts()
+        panel = PanelWindowController()
+        controller = InstallController(preferences: preferences, store: store, launch: launch, panel: panel)
         settings = SettingsWindowController { [weak self] in
             guard let self else { return AnyView(EmptyView()) }
             return AnyView(
@@ -74,21 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     preferences: self.preferences, recent: self.store.recent,
                     changeFolder: { [weak self] in self?.chooseWatchedFolder() },
                     setOpenAtLogin: { [weak self] in self?.setLoginItem($0) },
-                    setOpensDiskImages: { [weak self] in self?.setOpensDiskImages($0) }))
+                    setOpensDiskImages: { [weak self] in self?.setOpensDiskImages($0) },
+                    quit: { NSApp.terminate(nil) }))
         } onShow: { [weak self] in
             self?.preferences.opensDiskImages = DiskImageHandler.isDropDefault
         }
-        statusItem.menuContent = { [weak self] in
-            guard let self else { return .init(isWatching: false, folderName: "", recent: []) }
-            return .init(
-                isWatching: self.watcher?.isRunning ?? false, folderName: self.watchedFolderName,
-                recent: self.store.recent)
-        }
-        statusItem.onInstallFromImage = { [weak self] in self?.installFromImage() }
-        statusItem.onTogglePause = { [weak self] in self?.togglePause() }
-        statusItem.onSettings = { [weak self] in self?.settings.show() }
-        statusItem.onOpenRecent = { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: $0.path)]) }
-
         DistributedNotificationCenter.default().addObserver(
             forName: Self.showSettingsNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -242,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// is Drop's first access to the watched folder (see `OnboardingCoordinator`).
     private func updateWatcher() {
         let allowed = launch.skipsOnboarding || (onboarding?.allowsWatching ?? false)
-        let wanted = allowed && preferences.askOnNewImage && !isPaused
+        let wanted = allowed && preferences.askOnNewImage
         if let watcher, watcher.folder == watchedFolder.standardizedFileURL, watcher.isRunning == wanted { return }
         watcher?.stop()
         watcher = nil
@@ -255,24 +242,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.watcher = watcher
     }
 
-    private func togglePause() {
-        isPaused.toggle()
-        updateWatcher()
-    }
-
     /// Re-applies settings whenever one changes.
     private func observePreferences() {
         withObservationTracking {
             _ = preferences.askOnNewImage
             _ = preferences.watchedFolder
-            _ = preferences.keepInMenuBar
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 self.updateWatcher()
-                if self.statusItem.keep != self.preferences.keepInMenuBar {
-                    self.statusItem.keep = self.preferences.keepInMenuBar
-                }
                 self.observePreferences()
             }
         }
@@ -286,16 +264,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         open.prompt = "Watch"
         guard open.runModal() == .OK, let url = open.url else { return }
         preferences.watchedFolder = url
-    }
-
-    private func installFromImage() {
-        let open = NSOpenPanel()
-        open.allowedContentTypes = [UTType(filenameExtension: "dmg") ?? .diskImage]
-        open.allowsMultipleSelection = true
-        open.prompt = "Install"
-        NSApp.activate()
-        guard open.runModal() == .OK else { return }
-        for url in open.urls { controller.enqueue(url, origin: .opened) }
     }
 
     // MARK: Login item

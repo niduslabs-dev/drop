@@ -56,7 +56,8 @@ final class PanelModel: Identifiable {
     enum Origin: Equatable {
         /// Found by the watcher in the folder with this name ("New in Downloads").
         case watched(folderName: String)
-        /// Opened with Install from Disk Image….
+        /// Opened explicitly: Open With, a double-click when Drop is the default, or dropped
+        /// on the app icon. Shown in the centred window, which takes focus.
         case opened
     }
 
@@ -106,7 +107,7 @@ final class PanelModel: Identifiable {
 
     var board: Board {
         switch state {
-        case .reading: summary == nil ? .hidden : (summary?.update == nil ? .main : .update)
+        case .reading: summary?.update == nil ? .main : .update
         case .needsLicence: .licence
         case .needsPassword: .password
         case .preparing, .waitingToPrepare, .ready: summary?.update == nil ? .main : .update

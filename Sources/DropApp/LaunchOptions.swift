@@ -59,10 +59,11 @@ struct LaunchOptions {
 
     var isTesting: Bool { !manageLoginItem }
 
+    /// A panel test launch: any of `--watch`, `--destination` or `--trash`.
+    var usesTestFolders: Bool { watchFolder != nil || destination != nil || trashFolder != nil }
+
     /// Panel test launches go straight to the panel (see the type's notes).
-    var skipsOnboarding: Bool {
-        (watchFolder != nil || destination != nil || trashFolder != nil) && !resetOnboarding
-    }
+    var skipsOnboarding: Bool { usesTestFolders && !resetOnboarding }
 
     private static func folder(_ path: String) -> URL {
         URL(filePath: (path as NSString).expandingTildeInPath, directoryHint: .isDirectory).standardizedFileURL

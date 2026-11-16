@@ -1,62 +1,127 @@
 import AppKit
 import SwiftUI
 
-/// The rounded, translucent card every panel board sits in.
+/// How a panel board is presented: the popup's floating card, or the content of the
+/// centred window an opened disk image gets.
+enum PanelPresentation {
+    case popup
+    case window
+}
+
+extension EnvironmentValues {
+    @Entry var panelPresentation = PanelPresentation.popup
+    /// The centred window's title bar height, read from the window.
+    @Entry var titleBarHeight: CGFloat = 0
+}
+
+/// The card every panel board sits in. As a popup: rounded, the surface at 92% over the
+/// popover material, a hairline border. In the centred window the window is the card, so
+/// only the insets remain, the top one below the title bar.
 struct PanelCard<Content: View>: View {
     var spacing: CGFloat = Theme.Panel.spacing
     @ViewBuilder var content: Content
+    @Environment(\.panelPresentation) private var presentation
+    @Environment(\.titleBarHeight) private var titleBarHeight
 
     var body: some View {
-        VStack(alignment: .leading, spacing: spacing) { content }
-            .padding(Theme.panelInset)
-            .frame(width: Theme.Panel.width, alignment: .leading)
-            .background {
-                ZStack {
-                    VisualEffectBackground()
-                    Theme.Colour.controlBackground.opacity(Theme.Panel.tintOpacity)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Panel.cornerRadius, style: .continuous))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Panel.cornerRadius, style: .continuous)
-                    .strokeBorder(Theme.Colour.separator.opacity(Theme.Panel.borderOpacity))
-            }
+        let shape = RoundedRectangle(cornerRadius: Theme.Panel.cornerRadius, style: .continuous)
+        let stack = VStack(alignment: .leading, spacing: spacing) { content }
             .font(Theme.Font.body)
+            .foregroundStyle(Theme.Colour.bodyText)
+        switch presentation {
+        case .popup:
+            stack
+                .padding(Theme.panelInset)
+                .frame(width: Theme.Panel.width, alignment: .leading)
+                .background { SurfaceBackground(kind: .popup).clipShape(shape) }
+                .overlay { shape.strokeBorder(Theme.Colour.hairline) }
+        case .window:
+            stack
+                .padding(.top, titleBarHeight + Theme.CentredWindow.titleGap)
+                .padding([.horizontal, .bottom], Theme.panelInset)
+                .frame(width: Theme.Panel.width, alignment: .leading)
+                .background(SurfaceBackground(kind: .window))
+        }
     }
 }
 
-/// An always-active popover material, so the panel doesn't dim while Drop is in the
-/// background (it never takes focus).
+/// A window's backdrop. Light: the white surface, over the popover material for the popup.
+/// Dark: the ink glass (`Theme.Glass`), or solid ink with Reduce Transparency.
+struct SurfaceBackground: View {
+    enum Kind {
+        case popup
+        case window
+        case settings
+    }
+    let kind: Kind
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        if colorScheme == .dark {
+            if reduceTransparency {
+                kind == .popup ? Theme.Glass.solidPanel : Theme.Glass.solidWindow
+            } else {
+                ZStack {
+                    VisualEffectBackground(material: Theme.Glass.darkMaterial)
+                    if kind == .settings {
+                        Theme.Glass.settingsTint.opacity(Theme.Glass.settingsTintOpacity)
+                    } else {
+                        Theme.Glass.panelTint.opacity(Theme.Glass.panelTintOpacity)
+                    }
+                }
+            }
+        } else {
+            switch kind {
+            case .popup:
+                ZStack {
+                    VisualEffectBackground(material: Theme.Glass.lightPopupMaterial)
+                    Theme.Colour.surface.opacity(Theme.Panel.surfaceOpacity)
+                }
+            case .window: Theme.Colour.surface
+            case .settings: Color(nsColor: .windowBackgroundColor)
+            }
+        }
+    }
+}
+
+/// An always-active behind-window material, so the backdrop doesn't dim while Drop is in
+/// the background (the popup never takes focus).
 struct VisualEffectBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
-        view.material = .popover
+        view.material = material
         view.blendingMode = .behindWindow
         view.state = .active
         return view
     }
 
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ view: NSVisualEffectView, context: Context) { view.material = material }
 }
 
-/// "New in Downloads · Linea-2.4.1.dmg".
+/// "Drop · New in Downloads · Linea-2.4.1.dmg", with the drop glyph: every popup says
+/// who's asking in its top line.
 struct ImageHeader: View {
     let model: PanelModel
 
     var body: some View {
         HStack(spacing: Theme.Header.spacing) {
-            Image(systemName: "arrow.down.to.line")
-                .font(.system(size: Theme.Header.icon, weight: .medium))
-            Text(text).lineLimit(1).truncationMode(.middle)
+            Image(systemName: "drop")
+                .font(.system(size: Theme.Header.glyph, weight: .semibold))
+                .foregroundStyle(Theme.Colour.link)
+            (Text("Drop").font(Theme.Font.captionStrong).foregroundStyle(Theme.Colour.bodyText)
+                + Text(" \u{00B7} \(detail)").foregroundStyle(Theme.Colour.secondaryText))
+                .lineLimit(1).truncationMode(.middle)
         }
         .font(Theme.Font.caption)
-        .foregroundStyle(Theme.Colour.secondaryText)
         .accessibilityElement(children: .combine)
     }
 
-    private var text: String {
+    private var detail: String {
         switch model.origin {
-        case .watched(let folder): "New in \(folder) · \(model.dmg.lastPathComponent)"
+        case .watched(let folder): "New in \(folder) \u{00B7} \(model.dmg.lastPathComponent)"
         case .opened: model.dmg.lastPathComponent
         }
     }
@@ -82,14 +147,16 @@ struct AppIconView: View {
                     }
             case .placeholder(let symbol):
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Theme.Colour.placeholderTile.opacity(0.5))
+                    .fill(Theme.Colour.placeholderTile.opacity(Theme.Icon.placeholderFillOpacity))
                     .overlay {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .strokeBorder(Theme.Colour.separator)
                     }
                     .overlay {
-                        Image(systemName: symbol).font(.system(size: glyph * 0.9, weight: .regular))
-                            .foregroundStyle(Theme.Colour.secondaryText)
+                        Image(systemName: symbol).font(
+                            .system(size: glyph * Theme.Icon.placeholderGlyphScale, weight: .regular)
+                        )
+                        .foregroundStyle(Theme.Colour.secondaryText)
                     }
             }
         }
@@ -106,7 +173,7 @@ struct TitleRow<Subtitle: View, Badge: View>: View {
     var iconCornerRadius: CGFloat = Theme.Icon.cornerRadius
     var iconGlyph: CGFloat = Theme.Icon.glyph
     var titleFont: Font = Theme.Font.title
-    var subtitleSpacing: CGFloat = 2
+    var subtitleSpacing: CGFloat = Theme.Panel.titleSpacing
     @ViewBuilder var subtitle: Subtitle
     @ViewBuilder var badge: Badge
 
@@ -127,7 +194,7 @@ extension TitleRow where Badge == EmptyView {
     init(
         icon: PanelIcon, title: String, iconSize: CGFloat = Theme.Icon.size,
         iconCornerRadius: CGFloat = Theme.Icon.cornerRadius, iconGlyph: CGFloat = Theme.Icon.glyph,
-        titleFont: Font = Theme.Font.title, subtitleSpacing: CGFloat = 2,
+        titleFont: Font = Theme.Font.title, subtitleSpacing: CGFloat = Theme.Panel.titleSpacing,
         @ViewBuilder subtitle: () -> Subtitle
     ) {
         self.init(
@@ -136,21 +203,20 @@ extension TitleRow where Badge == EmptyView {
     }
 }
 
-/// The light tinted box under the title.
+/// The kit's info card: neutral by default, or warn or error.
 struct InfoCard<Content: View>: View {
+    var kind = CardKind.ok
     var spacing: CGFloat = Theme.Card.rowSpacing
     @ViewBuilder var content: Content
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) { content }
             .font(Theme.Font.small)
+            .foregroundStyle(kind.text)
             .padding(.vertical, Theme.Card.verticalPadding)
             .padding(.horizontal, Theme.Card.horizontalPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.primary.opacity(colorScheme == .dark ? Theme.Card.darkFillOpacity : Theme.Card.fillOpacity),
-                in: RoundedRectangle(cornerRadius: Theme.Card.cornerRadius, style: .continuous))
+            .background(kind.fill, in: RoundedRectangle(cornerRadius: Theme.Card.cornerRadius, style: .continuous))
     }
 }
 
@@ -162,7 +228,7 @@ struct CardRow: View {
     var body: some View {
         HStack(spacing: Theme.Card.iconSpacing) {
             Image(systemName: symbol)
-                .font(.system(size: Theme.Card.rowIcon - 2, weight: .semibold))
+                .font(.system(size: Theme.Card.rowGlyph, weight: .semibold))
                 .foregroundStyle(colour)
                 .frame(width: Theme.Card.rowIcon, height: Theme.Card.rowIcon)
             text
@@ -171,103 +237,29 @@ struct CardRow: View {
     }
 }
 
-/// The orange (or red) box: Warning, Update's running-app notice, Refused.
+/// A warn or error card with an icon, an optional bold title and a message: Warning,
+/// Update's running-app notice, Refused.
 struct Callout: View {
+    var kind = CardKind.warn
     var symbol = "exclamationmark.triangle"
-    var colour: Color = Theme.Colour.warning
-    var iconSize: CGFloat = Theme.Card.warningIcon
-    var padding: CGFloat = Theme.Card.warningPadding
     var title: String?
     let message: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: Theme.Card.calloutSpacing) {
-            Image(systemName: symbol)
-                .font(.system(size: iconSize - 3, weight: .semibold))
-                .foregroundStyle(colour)
-                .frame(width: iconSize, height: iconSize)
-            VStack(alignment: .leading, spacing: 4) {
-                if let title { Text(title).font(Theme.Font.calloutTitle) }
-                Text(message).font(Theme.Font.small).fixedSize(horizontal: false, vertical: true)
-                    .foregroundStyle(title == nil ? Theme.Colour.bodyText : Theme.Colour.secondaryText)
+        InfoCard(kind: kind) {
+            HStack(alignment: .top, spacing: Theme.Card.calloutSpacing) {
+                Image(systemName: symbol)
+                    .font(.system(size: Theme.Card.calloutGlyph, weight: .semibold))
+                    .foregroundStyle(kind.icon)
+                    .frame(width: Theme.Card.calloutIcon, height: Theme.Card.calloutIcon)
+                VStack(alignment: .leading, spacing: Theme.Card.calloutLineSpacing) {
+                    if let title { Text(title).font(Theme.Font.calloutTitle).foregroundStyle(kind.title) }
+                    Text(message).font(Theme.Font.small).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
-        .padding(title == nil ? Theme.Card.verticalPadding : padding)
-        .padding(.horizontal, title == nil ? Theme.Card.horizontalPadding - Theme.Card.verticalPadding : 0)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            colour.opacity(Theme.Card.warningFillOpacity),
-            in: RoundedRectangle(cornerRadius: Theme.Card.cornerRadius, style: .continuous)
-        )
         .accessibilityElement(children: .combine)
-    }
-}
-
-/// The accent-filled default button.
-struct PrimaryButtonStyle: ButtonStyle {
-    var horizontalPadding: CGFloat = Theme.Button.primaryPadding
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .singleLineLabel()
-            .font(Theme.Font.primaryButton)
-            .foregroundStyle(Theme.Colour.onAccent)
-            .padding(.horizontal, horizontalPadding)
-            .frame(minHeight: Theme.Button.height)
-            .background(
-                Theme.Colour.accent, in: RoundedRectangle(cornerRadius: Theme.Button.cornerRadius, style: .continuous)
-            )
-            .opacity(isEnabled ? (configuration.isPressed ? Theme.Button.pressedOpacity : 1) : 0.5)
-            .contentShape(Rectangle())
-    }
-}
-
-/// The plain bordered button.
-struct SecondaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .singleLineLabel()
-            .font(Theme.Font.button)
-            .foregroundStyle(Theme.Colour.bodyText)
-            .padding(.horizontal, Theme.Button.secondaryPadding)
-            .frame(minHeight: Theme.Button.height)
-            .background(
-                Theme.Colour.controlBackground,
-                in: RoundedRectangle(cornerRadius: Theme.Button.cornerRadius, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Button.cornerRadius, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(Theme.Button.borderOpacity))
-            }
-            .opacity(isEnabled ? (configuration.isPressed ? Theme.Button.pressedOpacity : 1) : 0.5)
-            .contentShape(Rectangle())
-    }
-}
-
-/// Text-only buttons: "Open disk image", "Undo", "Install Anyway", "Save as PDF…".
-struct LinkButtonStyle: ButtonStyle {
-    var colour: Color = Theme.Colour.link
-    var font: Font = Theme.Font.small
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .singleLineLabel()
-            .font(font)
-            .foregroundStyle(colour)
-            .opacity(configuration.isPressed ? Theme.Button.pressedOpacity : 1)
-            .contentShape(Rectangle())
-    }
-}
-
-extension View {
-    /// A button label never wraps or truncates: the button grows to fit it, and the row
-    /// around it makes room (`ButtonRow`).
-    func singleLineLabel() -> some View {
-        lineLimit(1).fixedSize(horizontal: true, vertical: false)
     }
 }
 

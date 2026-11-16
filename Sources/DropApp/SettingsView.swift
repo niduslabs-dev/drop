@@ -1,19 +1,27 @@
 import AppKit
 import SwiftUI
 
-/// The Settings board, as a grouped form so it reads like System Settings.
+/// The Settings board, as a grouped form so it reads like System Settings, with the kit's
+/// switches, select and buttons. Pausing is the Ask switch; Quit Drop sits at the bottom,
+/// since Drop has no menu bar menu.
 struct SettingsView: View {
     @Bindable var preferences: Preferences
     let recent: [RecentInstall]
     let changeFolder: () -> Void
     let setOpenAtLogin: (Bool) -> Void
     let setOpensDiskImages: (Bool) -> Void
+    let quit: () -> Void
 
     var body: some View {
         Form {
-            Section("Watching") {
-                Toggle("Ask when a new disk image arrives", isOn: $preferences.askOnNewImage)
-                LabeledContent("Folder") {
+            Section {
+                Toggle(isOn: $preferences.askOnNewImage) {
+                    Text("Ask when a new disk image arrives")
+                    caption("Turn off to pause watching.")
+                }
+                HStack(spacing: Theme.Settings.rowSpacing) {
+                    Text("Folder")
+                    Spacer(minLength: 0)
                     HStack(spacing: Theme.Settings.rowSpacing) {
                         Label {
                             Text(FileManager.default.displayName(atPath: preferences.watchedFolder.path))
@@ -21,40 +29,43 @@ struct SettingsView: View {
                             Image(systemName: "folder").foregroundStyle(Theme.Colour.folder)
                         }
                         .foregroundStyle(Theme.Colour.bodyText)
-                        Button(action: changeFolder) { Text("Change…").singleLineLabel() }.controlSize(.small)
+                        Button("Change\u{2026}", action: changeFolder).buttonStyle(.nidusSmall)
                     }
                 }
+            } header: {
+                header("Watching")
             }
-            Section("Installing") {
-                Picker("Install apps to", selection: $preferences.installLocation) {
-                    ForEach(InstallLocation.allCases) { Text($0.title).tag($0) }
+            Section {
+                HStack(spacing: Theme.Settings.rowSpacing) {
+                    Text("Install apps to")
+                    Spacer(minLength: 0)
+                    NidusSelect(
+                        label: "Install apps to", selection: preferences.installLocation,
+                        options: InstallLocation.allCases, title: \.title
+                    ) { preferences.installLocation = $0 }
                 }
                 Toggle("Move the disk image to the Trash", isOn: $preferences.trashImage)
                 Toggle("Open the app when it's installed", isOn: $preferences.openAfterInstall)
                 Toggle(isOn: $preferences.skipFirstOpenPrompt) {
                     Text("Skip the \u{201C}downloaded from the Internet\u{201D} prompt")
-                    Text("Only for apps notarized by Apple.").foregroundStyle(Theme.Colour.secondaryText)
+                    caption("Only for apps notarized by Apple.")
                 }
+            } header: {
+                header("Installing")
             }
             Section {
                 Toggle("Open Drop at login", isOn: loginBinding)
                 Toggle(isOn: handlerBinding) {
                     Text("Open disk images with Drop")
-                    Text("Double-click a .dmg to get the install panel.").foregroundStyle(Theme.Colour.secondaryText)
-                }
-                Toggle(isOn: $preferences.keepInMenuBar) {
-                    Text("Keep in menu bar")
-                    Text("Otherwise the icon shows only while Drop asks you something.").foregroundStyle(
-                        Theme.Colour.secondaryText)
+                    caption("Double-click a .dmg to get the install panel.")
                 }
             } header: {
-                Text("General")
+                header("General")
             } footer: {
-                Text("Drop checks the signature before it installs.")
-                    .font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText)
+                caption("Drop checks the signature before it installs.")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Section("Recent") {
+            Section {
                 if recent.isEmpty {
                     Text("Apps Drop installs show here.").foregroundStyle(Theme.Colour.secondaryText)
                 }
@@ -70,15 +81,35 @@ struct SettingsView: View {
                         Button("Show") {
                             NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: install.path)])
                         }
-                        .buttonStyle(LinkButtonStyle())
+                        .buttonStyle(.nidusLink())
                     }
+                }
+            } header: {
+                header("Recent")
+            } footer: {
+                HStack {
+                    Spacer()
+                    Button("Quit Drop", action: quit).buttonStyle(.nidusSmall)
                 }
             }
         }
         .formStyle(.grouped)
-        .toggleStyle(.switch)
+        .scrollContentBackground(.hidden)
+        .background(SurfaceBackground(kind: .settings).ignoresSafeArea())
+        .toggleStyle(.nidusSwitch)
+        .foregroundStyle(Theme.Colour.bodyText)
         .frame(width: Theme.Settings.width)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Section headers in the kit's secondary text, which clears 4.5:1 where the system's
+    /// header grey doesn't at this size.
+    private func header(_ title: String) -> some View {
+        Text(title).font(Theme.Font.captionStrong).foregroundStyle(Theme.Colour.secondaryText)
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText)
     }
 
     private var handlerBinding: Binding<Bool> {
@@ -118,6 +149,7 @@ final class SettingsWindowController {
             let window = NSWindow(contentViewController: controller)
             window.title = "Drop"
             window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            window.paintsSurfaceUnderTitleBar()
             window.isReleasedWhenClosed = false
             window.center()
             self.window = window
