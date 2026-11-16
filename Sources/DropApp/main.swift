@@ -1,24 +1,26 @@
 import AppKit
 
 /// One copy of Drop at a time. A second start (Finder, Spotlight, `open -n`) asks the
-/// running copy to show Settings and exits. Demo and panel test launches (`--watch`,
-/// `--destination`, `--trash`) are exempt, so screenshots and scripted checks run beside a
-/// copy that watches the real Downloads, and never poke it.
+/// running copy to show Settings and exits, even when the two copies sit at different
+/// paths (`~/Applications` and `/Applications`), so only one watches Downloads. Demo and
+/// panel test launches (`--watch`, `--destination`, `--trash`) are exempt, so screenshots
+/// and scripted checks run beside a copy that watches the real Downloads, and never poke it.
 ///
-/// Only a copy of this very app counts: the same bundle ID at the same bundle path. A
-/// test build in `.build` shares the release bundle ID with an installed copy, and a copy
-/// that started while a test copy ran must not take the test copy for itself and quit.
-/// Debug builds also have their own bundle ID (`scripts/build-app.sh`).
+/// Test builds in `.build` share the release bundle ID, so they are kept apart: a running
+/// `.build` copy never makes an installed copy quit, and a `.build` launch only defers to a
+/// copy at its own path. The rule is `SingleInstance.shouldDefer`. Debug builds also have
+/// their own bundle ID (`scripts/build-app.sh`).
 @MainActor
 func runDrop() {
     let launch = LaunchOptions()
-    let me = ProcessInfo.processInfo.processIdentifier
-    let myBundle = Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
-    if launch.demo == nil, !launch.usesTestFolders, let bundleID = Bundle.main.bundleIdentifier,
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains(where: {
-            $0.processIdentifier != me
-                && $0.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() == myBundle
-        })
+    if let bundleID = Bundle.main.bundleIdentifier,
+        SingleInstance.shouldDefer(
+            myPID: ProcessInfo.processInfo.processIdentifier,
+            myBundle: Bundle.main.bundleURL,
+            exempt: launch.demo != nil || launch.usesTestFolders,
+            running: NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).map {
+                SingleInstance.RunningCopy(pid: $0.processIdentifier, bundleURL: $0.bundleURL)
+            })
     {
         DistributedNotificationCenter.default().postNotificationName(
             AppDelegate.showSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true)

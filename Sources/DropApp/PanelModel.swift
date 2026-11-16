@@ -23,6 +23,8 @@ enum PanelAction: Sendable, Equatable {
     case disagreeLicence
     case saveLicence
     case submitPassword
+    /// Drop's own newer disk image: close and run Drop's update check (`UpdateCheck`).
+    case checkForUpdates
     case changeLocation(InstallLocation)
 }
 
@@ -37,6 +39,8 @@ enum Board: Equatable {
     case fallback
     case licence
     case password
+    /// Drop's own disk image (`SelfImage`): never Install, never Quit and Update.
+    case selfImage
     case hidden
 }
 
@@ -119,6 +123,9 @@ final class PanelModel: Identifiable {
     var installedApp: URL?
     /// The installed copy of the app being updated is running (Update board).
     var appIsRunning = false
+    /// Quit and Update asked the running copy to quit and is waiting for it to go: the
+    /// primary reads "Quitting …" and the controls are dimmed.
+    var isQuitting = false
     /// Quit and Update asked the app to quit and it didn't.
     var quitFailed = false
     var licenceAccepted = false
@@ -132,6 +139,9 @@ final class PanelModel: Identifiable {
     var isBusy = false
     /// The pointer is over the panel: board 3 waits before closing.
     var isHovered = false
+    /// Set when the image holds Drop itself; the board then shows `SelfImage` whatever the
+    /// session's state, and the session is stopped.
+    var selfImage: SelfImage?
     /// Demo fixtures set this; real sessions use the app's icon.
     var iconOverride: PanelIcon?
     /// The first-time milestones logged for this panel (popup, summary, icon, size, verified).
@@ -148,7 +158,8 @@ final class PanelModel: Identifiable {
     }
 
     var board: Board {
-        switch state {
+        if selfImage != nil { return .selfImage }
+        return switch state {
         case .reading: summary?.update == nil ? .main : .update
         case .needsLicence: .licence
         case .needsPassword: .password

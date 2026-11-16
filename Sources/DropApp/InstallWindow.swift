@@ -20,10 +20,11 @@ import SwiftUI
 struct InstallWindowView: View {
     @Bindable var model: PanelModel
     @Environment(\.titleBarHeight) private var titleBarHeight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The window's states, from the model's board.
     enum Phase: Equatable {
-        case ready, licence, password, working, done, warning, refused, fallback, hidden
+        case ready, licence, password, working, done, warning, refused, fallback, selfImage, hidden
     }
 
     var phase: Phase {
@@ -36,6 +37,7 @@ struct InstallWindowView: View {
         case .warning: .warning
         case .refused: .refused
         case .fallback: .fallback
+        case .selfImage: .selfImage
         case .hidden: .hidden
         }
     }
@@ -60,7 +62,7 @@ struct InstallWindowView: View {
     private var column: some View {
         VStack(spacing: 0) {
             InstallWindowMedia(model: model, phase: phase)
-            Text(model.appName)
+            Text(model.selfImage?.title ?? model.appName)
                 .font(Theme.Font.windowTitle)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -74,9 +76,10 @@ struct InstallWindowView: View {
             .foregroundStyle(Theme.Colour.secondaryText)
             .padding(.top, Theme.InstallWindow.titleToMeta)
             VStack(spacing: Theme.InstallWindow.detailsToOptions) {
-                details
-                if hasOptions { options }
+                details.transition(.opacity)
+                if hasOptions { options.transition(.opacity) }
             }
+            .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: detailsKey)
             .padding(.top, Theme.InstallWindow.metaToDetails)
             actionsSlot
                 .padding(.top, Theme.InstallWindow.optionsToActions)
@@ -99,7 +102,11 @@ struct InstallWindowView: View {
         case .working:
             guard let progress = model.progress, progress.fraction < 1 else { return "Checking the signature" }
             return "Copying files \u{00B7} \(Format.progress(progress))"
+        case .selfImage:
+            return model.selfImage?.subtitle ?? ""
         default:
+            if model.isQuitting { return "Waiting for \(model.appName) to quit" }
+            if model.quitFailed { return "\(model.appName) didn't quit. Quit it yourself, then try again." }
             if let update = model.summary?.update, let version = model.summary?.version {
                 return "Updates \(update.installedVersion ?? "the installed copy") to \(version)"
             }
@@ -136,8 +143,18 @@ struct InstallWindowView: View {
                     .lineSpacing(Theme.Card.lineSpacing)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        case .selfImage:
+            Callout(kind: .info, symbol: "info.circle", message: model.selfImage?.message ?? "")
         case .hidden:
             EmptyView()
+        }
+    }
+
+    /// Which details and options show: ready, working and done share theirs.
+    private var detailsKey: String {
+        switch phase {
+        case .ready, .working, .done: "flow"
+        default: "\(phase)"
         }
     }
 
@@ -145,8 +162,9 @@ struct InstallWindowView: View {
 
     private var hasOptions: Bool { [.ready, .working, .done, .warning].contains(phase) }
 
-    /// Install to and the Trash switch. Dimmed in place (0.45) once they can no longer
-    /// change anything: while installing and after.
+    /// Install to and the Trash switch. Each row dims in place as one, label and control
+    /// (`Theme.Control.disabledOpacity`), once it can no longer change anything: while
+    /// installing and after.
     private var options: some View {
         RowCard {
             SettingsRow("Install to") {
@@ -156,7 +174,7 @@ struct InstallWindowView: View {
             }
             SwitchRow(title: "Move the disk image to the Trash", isOn: $model.trashImage)
         }
-        .disabled(phase == .working || phase == .done)
+        .disabled(!model.buttons.controlsEnabled || phase == .done)
     }
 
     // MARK: Actions
@@ -169,10 +187,8 @@ struct InstallWindowView: View {
     private var actions: some View {
         VStack(spacing: Theme.InstallWindow.actionSpacing) {
             switch phase {
-            case .ready:
-                primary(updateTitle ?? "Install", .install)
-                secondary("Not now", .notNow)
-                link("Open disk image", .openImage)
+            case .ready, .working, .done:
+                flowActions
             case .licence:
                 primary("Agree and Install", .agreeLicence)
                 secondary("Disagree", .disagreeLicence)
@@ -180,23 +196,6 @@ struct InstallWindowView: View {
             case .password:
                 primary("Open", .submitPassword).disabled(model.password.isEmpty)
                 secondary("Not now", .notNow)
-            case .working where model.skipsProgress:
-                // Almost nothing left to do: no fill that would only flash, straight to done.
-                primary(updateTitle ?? "Install", .install)
-                secondary("Cancel", .cancelInstall)
-                link("Open disk image", .openImage).disabled(true)
-            case .working:
-                ProgressCapsule(
-                    fraction: min(model.progress?.fraction ?? 0, Theme.Motion.progressCeiling), size: .hero)
-                secondary("Cancel", .cancelInstall)
-                link("Open disk image", .openImage).disabled(true)
-            case .done:
-                primary("Open \(model.appName)", .openApp)
-                secondary("Show in Finder", .showAppInFinder)
-                link("Undo moving the disk image", .undoTrash)
-                    .opacity(model.trashedImage == nil ? 0 : 1)
-                    .disabled(model.trashedImage == nil)
-                    .accessibilityHidden(model.trashedImage == nil)
             case .warning:
                 primary("Don't Install", .notNow)
                 secondary("Show in Finder", .showImageInFinder)
@@ -209,16 +208,53 @@ struct InstallWindowView: View {
                 primary(copy.primaryTitle, copy.primary)
                 secondary("Not now", .notNow)
                 if copy.primary != .openImage { link("Open disk image", .openImage) }
+            case .selfImage:
+                if let offer = model.selfImage {
+                    primary(offer.primary.title, offer.primary.action)
+                    if let other = offer.secondary { secondary(other.title, other.action) }
+                    link("Open disk image", .openImage)
+                }
             case .hidden:
                 EmptyView()
             }
         }
         .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: actionsKey)
     }
 
-    private var updateTitle: String? {
-        guard model.summary?.update != nil else { return nil }
-        return model.appIsRunning ? "Quit and Update" : "Update"
+    /// What the actions slot holds: a change of phase kind cross-fades the buttons, and a
+    /// change of the flow's link cross-fades the link.
+    private var actionsKey: String {
+        switch phase {
+        case .ready, .working, .done: "flow \(model.buttons.link)"
+        default: "\(phase)"
+        }
+    }
+
+    /// Ready, working and done as the same three views (`PanelButtons`): the labels swap,
+    /// the capsule fills and the link cross-fades in place.
+    @ViewBuilder private var flowActions: some View {
+        let buttons = model.buttons
+        StepCapsule(step: buttons.primary, size: .hero) { model.send($0) }
+        Button {
+            model.send(buttons.secondary.action)
+        } label: {
+            SwapLabel(title: buttons.secondary.title, fills: true)
+        }
+        .buttonStyle(.nidusHeroSecondary)
+        .disabled(!buttons.secondary.isEnabled)
+        ZStack {
+            switch buttons.link {
+            case .openImage(let isEnabled):
+                link("Open disk image", .openImage).disabled(!isEnabled).transition(.opacity)
+            case .undoTrash(let isVisible):
+                link("Undo moving the disk image", .undoTrash)
+                    .opacity(isVisible ? 1 : 0)
+                    .disabled(!isVisible)
+                    .accessibilityHidden(!isVisible)
+                    .transition(.opacity)
+            }
+        }
     }
 
     private func primary(_ title: String, _ action: PanelAction) -> some View {

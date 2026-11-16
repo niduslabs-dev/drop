@@ -90,7 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Typeface.registerBundledFonts()
         FocusVisibility.shared.start()
         panel = PanelWindowController()
-        controller = InstallController(preferences: preferences, store: store, launch: launch, panel: panel)
+        controller = InstallController(
+            preferences: preferences, store: store, launch: launch, panel: panel, updateCheck: .live(updates))
         settings = SettingsWindowController { [weak self] in
             guard let self else { return AnyView(EmptyView()) }
             return AnyView(

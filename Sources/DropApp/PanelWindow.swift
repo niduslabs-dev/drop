@@ -90,6 +90,9 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     private var windowPlacementPending = false
     private(set) var model: PanelModel?
     private var presentation: PanelPresentation?
+    /// Counts shows, closes and exits, so an exit that finishes after the surface was
+    /// shown again or closed knows to leave it alone.
+    private var exitGeneration = 0
     /// The user asked to dismiss the shown model (Esc, or the window's close button).
     var onDismiss: (PanelModel) -> Void = { _ in }
     /// The popup or window was shown or closed: the update popup waits while either is up.
@@ -103,6 +106,8 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     var windowNumber: Int { presentation == .window ? window.windowNumber : popup.windowNumber }
+    /// The shown surface's frame on screen.
+    var frame: NSRect { presentation == .window ? window.frame : popup.frame }
     /// The install window is up (not the popup).
     var isWindowVisible: Bool { window.isVisible }
 
@@ -118,6 +123,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     /// Shows `model`, or does nothing when it's already up (its boards update in place).
     func show(_ model: PanelModel) {
         guard self.model !== model else { return }
+        resetExit()
         self.model = model
         switch model.origin {
         case .watched: showPopup(model)
@@ -133,6 +139,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         slide = nil
         popup.orderOut(nil)
         window.orderOut(nil)
+        resetExit()
         ActivationPolicy.closed(.install)
         // Drop the views, so their tasks and timers stop while nothing is shown.
         popupHosting?.rootView = AnyView(EmptyView())
@@ -141,6 +148,108 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         presentation = nil
         onVisibilityChange()
     }
+
+    // MARK: Exit before the app opens
+
+    /// Plays the shown surface's exit and orders it out, keeping its model and views: the
+    /// install window fades and shrinks a little, the popup slides back off the edge it
+    /// came from (Reduce Motion: a fade alone for both). Drop leaves the Dock as the
+    /// window goes. Follow with `close()` once the app has opened, or `restoreHidden()`
+    /// when it didn't.
+    ///
+    /// The window's frame never changes: the shrink is a transform on the content's
+    /// layer, so nothing lays out again on the way out.
+    ///
+    /// - Returns: false when nothing is shown, or the surface was shown again or closed
+    ///   while the exit ran; it's then left as it is.
+    func hideForOpen() async -> Bool {
+        guard model != nil, let presentation else { return false }
+        exitGeneration += 1
+        let generation = exitGeneration
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        switch presentation {
+        case .window: await fadeOutWindow(reduceMotion: reduceMotion)
+        case .popup: await slideOutPopup(reduceMotion: reduceMotion)
+        }
+        guard generation == exitGeneration else { return false }
+        popup.orderOut(nil)
+        window.orderOut(nil)
+        clearExitEffects()
+        ActivationPolicy.closed(.install)
+        return true
+    }
+
+    /// Brings back the surface `hideForOpen` hid, on the board its model shows now: the
+    /// window where it was, the popup with its entrance.
+    func restoreHidden() {
+        guard model != nil, let presentation, !isVisible else { return }
+        resetExit()
+        switch presentation {
+        case .window:
+            ActivationPolicy.opened(.install)
+            WindowPresence.present(window)
+        case .popup:
+            // The size it left with: its content hasn't changed while it was hidden.
+            guard let target = Self.popupFrame(for: popup.frame.size) else { return }
+            beginEntrance(at: target)
+        }
+    }
+
+    private func fadeOutWindow(reduceMotion: Bool) async {
+        if !reduceMotion, let layer = windowHosting?.layer {
+            // About the content's centre, wherever AppKit put the layer's anchor.
+            let centre = CGPoint(
+                x: (0.5 - layer.anchorPoint.x) * layer.bounds.width,
+                y: (0.5 - layer.anchorPoint.y) * layer.bounds.height)
+            var shrunk = CATransform3DMakeTranslation(centre.x, centre.y, 0)
+            shrunk = CATransform3DScale(shrunk, Theme.Motion.windowExitScale, Theme.Motion.windowExitScale, 1)
+            shrunk = CATransform3DTranslate(shrunk, -centre.x, -centre.y, 0)
+            let shrink = CABasicAnimation(keyPath: "transform")
+            shrink.fromValue = CATransform3DIdentity
+            shrink.toValue = shrunk
+            shrink.duration = Theme.Motion.windowExitDuration
+            shrink.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            // Held at the end until the window is ordered out, so it can't snap back to
+            // full size for a frame.
+            shrink.fillMode = .forwards
+            shrink.isRemovedOnCompletion = false
+            layer.add(shrink, forKey: Self.exitAnimationKey)
+        }
+        let window = window
+        await NSAnimationContext.runAnimationGroup { context in
+            context.duration = Theme.Motion.windowExitDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            window.animator().alphaValue = 0
+        }
+    }
+
+    private func slideOutPopup(reduceMotion: Bool) async {
+        slide?.stop()
+        slide = nil
+        entrancePending = false
+        let popup = popup
+        let off = popup.frame.offsetBy(dx: popup.frame.width + Theme.Popup.screenInset, dy: 0)
+        await NSAnimationContext.runAnimationGroup { context in
+            context.duration = Theme.Motion.popupExitDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            popup.animator().alphaValue = 0
+            if !reduceMotion { popup.animator().setFrame(off, display: true) }
+        }
+    }
+
+    /// Forgets an exit in flight and undoes its effects, before a surface shows again.
+    private func resetExit() {
+        exitGeneration += 1
+        clearExitEffects()
+    }
+
+    private func clearExitEffects() {
+        windowHosting?.layer?.removeAnimation(forKey: Self.exitAnimationKey)
+        window.alphaValue = 1
+        popup.alphaValue = 1
+    }
+
+    private static let exitAnimationKey = "dev.niduslabs.drop.exit"
 
     /// Makes the shown panel key without activating Drop, for the password field. Never in
     /// a background test: a key non-activating panel would take the user's keystrokes.

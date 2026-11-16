@@ -741,7 +741,8 @@ public actor InstallSession {
         let info = BundleInfo.read(app: app, in: fileSystem)
         var summary = AppSummary(
             bundleName: app.name, name: info?.displayName ?? app.name.trimmingAppSuffix, version: info?.shortVersion,
-            bundleIdentifier: info?.identifier, size: nil, iconData: info?.iconData(app: app, in: fileSystem))
+            bundleIdentifier: info?.identifier, size: nil, iconData: info?.iconData(app: app, in: fileSystem),
+            buildVersion: info?.buildVersion)
         let installed = destination.appending(path: app.name, directoryHint: .isDirectory)
         var status = stat()
         if lstat(installed.path, &status) == 0, status.st_mode & S_IFMT == S_IFDIR {

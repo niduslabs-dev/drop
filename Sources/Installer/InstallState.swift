@@ -134,6 +134,9 @@ public struct AppSummary: Sendable, Equatable {
     public var name: String
     /// `CFBundleShortVersionString`, the version people know.
     public var version: String?
+    /// `CFBundleVersion`, the build number. Breaks a tie between equal `version`s, such as
+    /// when Drop compares its own disk image with itself.
+    public var buildVersion: String?
     public var bundleIdentifier: String?
     /// Sum of the app's file sizes, from the image's catalog. Nil in `identified`, set from
     /// `preparing` on.
@@ -165,8 +168,9 @@ public struct AppSummary: Sendable, Equatable {
     public init(
         bundleName: String, name: String, version: String?, bundleIdentifier: String?, size: UInt64?,
         iconData: Data? = nil, signer: String? = nil, teamID: String? = nil, isNotarized: Bool = false,
-        update: Update? = nil
+        update: Update? = nil, buildVersion: String? = nil
     ) {
+        self.buildVersion = buildVersion
         self.bundleName = bundleName
         self.name = name
         self.version = version

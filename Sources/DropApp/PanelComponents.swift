@@ -283,12 +283,13 @@ struct SettingsRow<Control: View, Info: View>: View {
         HStack(spacing: Theme.Row.labelControlGap) {
             VStack(alignment: .leading, spacing: Theme.Row.captionGap) {
                 HStack(spacing: Theme.Row.titleInfoGap) {
-                    Text(title).font(Theme.Font.body).foregroundStyle(Theme.Colour.bodyText)
+                    Text(title).font(Theme.Font.body).foregroundStyle(Theme.Colour.bodyText).dimsWhenDisabled()
                     info
                 }
                 if let caption {
                     Text(caption).font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText)
                         .lineLimit(1)
+                        .dimsWhenDisabled()
                 }
             }
             Spacer(minLength: 0)
@@ -342,28 +343,43 @@ struct CardRow: View {
     }
 }
 
-/// A warn or error card with an icon, an optional bold title and a message: Warning,
-/// Update's running-app notice, Refused.
+/// An info, warn or error card with an icon, an optional bold title and a message: Warning,
+/// Update's running-app notice, Refused, Drop's own disk image. A change of kind, icon or
+/// message blur-swaps in place; the fill cross-fades.
 struct Callout: View {
     var kind = CardKind.warn
     var symbol = "exclamationmark.triangle"
     var title: String?
     let message: String
+    /// The other messages this callout can change to. The card keeps room for the tallest,
+    /// so the panel doesn't change height when the message does.
+    var reserving: [String] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         InfoCard(kind: kind) {
             HStack(alignment: .top, spacing: Theme.Card.calloutSpacing) {
-                Image(systemName: symbol)
-                    .font(.system(size: Theme.Card.calloutGlyph, weight: .semibold))
-                    .foregroundStyle(kind.icon)
-                    .frame(width: Theme.Card.calloutIcon, height: Theme.Card.calloutIcon)
+                StatusSwap(key: "\(kind)|\(symbol)") {
+                    Image(systemName: symbol)
+                        .font(.system(size: Theme.Card.calloutGlyph, weight: .semibold))
+                        .foregroundStyle(kind.icon)
+                        .frame(width: Theme.Card.calloutIcon, height: Theme.Card.calloutIcon)
+                }
                 VStack(alignment: .leading, spacing: Theme.Card.calloutLineSpacing) {
                     if let title { Text(title).font(Theme.Font.calloutTitle).foregroundStyle(kind.title) }
-                    Text(message).font(Theme.Font.small).fixedSize(horizontal: false, vertical: true)
+                    ZStack(alignment: .topLeading) {
+                        ForEach(reserving, id: \.self) { line in
+                            Text(line).fixedSize(horizontal: false, vertical: true).hidden()
+                                .accessibilityHidden(true)
+                        }
+                        StatusSwap(key: message) { Text(message).fixedSize(horizontal: false, vertical: true) }
+                    }
+                    .font(Theme.Font.small)
                 }
                 Spacer(minLength: 0)
             }
         }
+        .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: kind)
         .accessibilityElement(children: .combine)
     }
 }
@@ -377,9 +393,11 @@ struct ButtonRow<Leading: View, Trailing: View>: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
+            // The stack's spacing on both sides of the spacer keeps the link at least two
+            // spacings from the buttons.
             HStack(spacing: Theme.Button.spacing) {
                 leading
-                Spacer(minLength: Theme.Button.spacing)
+                Spacer(minLength: 0)
                 trailing
             }
             VStack(alignment: .trailing, spacing: Theme.Button.spacing) {

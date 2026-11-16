@@ -348,15 +348,18 @@ extension View {
 
 // MARK: - Info cards
 
-/// The kit's info cards: neutral (signer, steps, notices), warn (amber) and error (red).
-enum CardKind {
+/// The kit's info cards: neutral (signer, steps, notices), info (moss: nothing is wrong,
+/// here is what happens), warn (amber) and error (red).
+enum CardKind: Hashable {
     case ok
+    case info
     case warn
     case error
 
     var fill: Color {
         switch self {
         case .ok: Theme.Colour.infoFill
+        case .info: Theme.Colour.mossFill
         case .warn: Theme.Colour.warnFill
         case .error: Theme.Colour.errorFill
         }
@@ -365,6 +368,7 @@ enum CardKind {
     var icon: Color {
         switch self {
         case .ok: Theme.Colour.good
+        case .info: Theme.Colour.mossIcon
         case .warn: Theme.Colour.warning
         case .error: Theme.Colour.error
         }
@@ -373,67 +377,174 @@ enum CardKind {
     var text: Color {
         switch self {
         case .warn: Theme.Colour.warnText
-        case .ok, .error: Theme.Colour.bodyText
+        case .ok, .info, .error: Theme.Colour.bodyText
         }
     }
 
     var title: Color {
         switch self {
         case .warn: Theme.Colour.warnTitle
-        case .ok, .error: Theme.Colour.bodyText
+        case .ok, .info, .error: Theme.Colour.bodyText
         }
     }
 }
 
 // MARK: - Progress capsule
 
-/// The primary capsule as the progress (Progress board): moss fills it left to right over
-/// moss at 22%, and the label reads "Installing… 62%" with rolling, monospaced digits. The
-/// label is drawn twice and clipped by the fill, body text over the unfilled part and
-/// white over the moss, so every glyph keeps its contrast wherever the edge passes.
-/// Reduce Motion: the fill and the digits jump to each value.
-struct ProgressCapsule: View {
-    /// Held under `Theme.Motion.progressCeiling` by the caller until done.
-    let fraction: Double
+/// The primary capsule in every state of the install flow (`PanelButtons.Primary`), as one
+/// view, so each change animates in place instead of one button replacing another:
+///
+/// - solid moss with a label that blur-swaps (Install, Quit and Update, Open …);
+/// - the progress (Progress board): moss fills it left to right over moss at 22%, growing
+///   in from the left edge, and the label reads "Installing… 62%" with rolling, monospaced
+///   digits. The label is drawn twice and clipped by the fill, body text over the unfilled
+///   part and white over the moss, so every glyph keeps its contrast wherever the edge is;
+/// - waiting for an app to quit: the same track with a slow shimmer and no number.
+///
+/// The solid button and the track are two layers of one capsule that cross-fade; the
+/// capsule is as wide as its label (240 in the install window) and its width animates.
+/// Reduce Motion: plain fades, no shimmer, and the fill and digits jump to each value.
+struct StepCapsule: View {
+    let step: PanelButtons.Primary
     var size: NidusButtonStyle.Size = .regular
+    let send: (PanelAction) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let shape = Capsule()
-        let clamped = min(max(fraction, 0), 1)
-        let percent = Int((clamped * 100).rounded())
-        label(colour: Theme.Colour.bodyText, percent: percent)
+        // An invisible label sets the size; both layers fill it.
+        Text(step.sizingLabel)
+            .font(font)
+            .monospacedDigit()
+            .singleLineLabel()
+            .hidden()
+            .accessibilityHidden(true)
             .padding(.horizontal, Theme.Button.padding)
             .frame(minWidth: size == .hero ? Theme.Button.heroWidth : nil, minHeight: height)
-            .background { shape.fill(Theme.Colour.accent.opacity(Theme.Motion.progressTrackOpacity)) }
-            .overlay(alignment: .leading) {
-                GeometryReader { geometry in
-                    let width = geometry.size.width * clamped
-                    ZStack(alignment: .leading) {
-                        Rectangle().fill(Theme.Colour.accent).frame(width: width)
-                        label(colour: Theme.Colour.onAccent, percent: percent)
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                            .mask(alignment: .leading) { Rectangle().frame(width: width) }
-                    }
-                }
-            }
-            .clipShape(shape)
-            .animation(reduceMotion ? nil : Theme.Motion.progress, value: clamped)
-            .accessibilityElement()
-            .accessibilityLabel("Installing")
-            .accessibilityValue("\(percent) percent")
-            .accessibilityAddTraits(.updatesFrequently)
+            .overlay { track.opacity(step.isSolid ? 0 : 1) }
+            .overlay { solid.opacity(step.isSolid ? 1 : 0) }
+            .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.popup, value: step.isSolid)
+            .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.popup, value: step.sizingLabel)
     }
 
     private var height: CGFloat { size == .hero ? Theme.Button.heroHeight : Theme.Button.height }
+    private var font: Font { size == .hero ? Theme.Font.heroPrimaryButton : Theme.Font.primaryButton }
 
-    private func label(colour: Color, percent: Int) -> some View {
-        Text("Installing\u{2026} \(percent)%")
-            .font(size == .hero ? Theme.Font.heroPrimaryButton : Theme.Font.primaryButton)
-            .monospacedDigit()
-            .contentTransition(reduceMotion ? .identity : .numericText(value: Double(percent)))
-            .animation(reduceMotion ? nil : Theme.Motion.numbers, value: percent)
-            .foregroundStyle(colour)
-            .singleLineLabel()
+    /// The real button: hover, press, focus ring and Return, whenever there's an action.
+    private var solid: some View {
+        Button {
+            if let action = step.action { send(action) }
+        } label: {
+            StatusSwap(key: solidTitle) { Text(solidTitle).frame(maxWidth: .infinity) }
+        }
+        .buttonStyle(NidusButtonStyle(kind: .primary, size: size))
+        .keyboardShortcut(.defaultAction)
+        .allowsHitTesting(step.action != nil)
+        .accessibilityHidden(!step.isSolid)
     }
+
+    /// The solid layer keeps its last label while the track covers it, so nothing swaps
+    /// unseen and then pops.
+    private var solidTitle: String { step.isSolid ? step.label : "" }
+
+    private var track: some View {
+        let shape = Capsule()
+        return GeometryReader { geometry in
+            let width = geometry.size.width * step.fill
+            ZStack(alignment: .leading) {
+                shape.fill(Theme.Colour.accent.opacity(Theme.Motion.progressTrackOpacity))
+                if case .quitting = step, !reduceMotion {
+                    Shimmer().transition(.opacity)
+                }
+                trackLabel(colour: Theme.Colour.bodyText)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                Rectangle().fill(Theme.Colour.accent).frame(width: width)
+                trackLabel(colour: Theme.Colour.onAccent)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .mask(alignment: .leading) { Rectangle().frame(width: width) }
+            }
+        }
+        .clipShape(shape)
+        .animation(reduceMotion ? nil : Theme.Motion.progress, value: step.fill)
+        .accessibilityElement()
+        .accessibilityLabel(step.isSolid ? "" : step.phrase)
+        .accessibilityValue(progressValue)
+        .accessibilityAddTraits(.updatesFrequently)
+        .accessibilityHidden(step.isSolid)
+    }
+
+    private var progressValue: String {
+        if case .progress(_, let fraction) = step { return "\(PanelButtons.Primary.percent(fraction)) percent" }
+        return ""
+    }
+
+    private func trackLabel(colour: Color) -> some View {
+        let percent = PanelButtons.Primary.percent(step.fill)
+        return StatusSwap(key: step.isSolid ? "" : step.phrase) {
+            Text(step.isSolid ? "" : step.label)
+                .font(font)
+                .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText(value: Double(percent)))
+                .animation(reduceMotion ? nil : Theme.Motion.numbers, value: percent)
+                .foregroundStyle(colour)
+                .singleLineLabel()
+                .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+/// The waiting capsule's shimmer: a soft band of moss that crosses the track again and
+/// again. Only drawn when motion isn't reduced.
+private struct Shimmer: View {
+    @State private var crossed = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let band = geometry.size.width * Theme.Motion.shimmerBand
+            LinearGradient(
+                colors: [.clear, Theme.Colour.accent.opacity(Theme.Motion.shimmerOpacity), .clear],
+                startPoint: .leading, endPoint: .trailing
+            )
+            .frame(width: band)
+            .offset(x: crossed ? geometry.size.width : -band)
+            .onAppear {
+                withAnimation(.linear(duration: Theme.Motion.shimmerDuration).repeatForever(autoreverses: false)) {
+                    crossed = true
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A button label that blur-swaps when its text changes, in a button that stays the same
+/// view (Not now, Cancel, Show in Finder). `fills` centres it in a fixed-width capsule.
+struct SwapLabel: View {
+    let title: String
+    var fills = false
+
+    var body: some View {
+        StatusSwap(key: title) { Text(title).frame(maxWidth: fills ? .infinity : nil) }
+    }
+}
+
+/// Dims a label with the control it names. The kit's controls dim themselves when
+/// disabled (`Theme.Control.disabledOpacity`, on `Theme.Motion.enable`); a plain `Text`
+/// beside one doesn't, so a row would dim only by half. This gives the label the same
+/// opacity on the same animation, so the row dims and comes back as one.
+///
+/// Put it on the label alone, never on a container that holds a kit control: the control
+/// would dim twice.
+private struct DimsWhenDisabled: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isEnabled ? 1 : Theme.Control.disabledOpacity)
+            .animation(Theme.Motion.enable, value: isEnabled)
+    }
+}
+
+extension View {
+    /// The label of a row whose control is a kit control (see `DimsWhenDisabled`).
+    func dimsWhenDisabled() -> some View { modifier(DimsWhenDisabled()) }
 }

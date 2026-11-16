@@ -13,6 +13,9 @@ final class InstallController {
     private let store: Store
     private let launch: LaunchOptions
     private let panel: PanelWindowController
+    private let updateCheck: UpdateCheck
+    /// The running Drop, to recognise its own disk image (`SelfImage`).
+    private let running: SelfImage.Running
 
     private var queue: [(url: URL, origin: PanelModel.Origin)] = []
     private var current: PanelModel?
@@ -26,20 +29,29 @@ final class InstallController {
     private var installerObserver: NSObjectProtocol?
     /// When board 2 first showed for the current model, for `Theme.Motion.installingHold`.
     private var installingShownAt: ContinuousClock.Instant?
+    /// The current panel is on its way out before its app opens (`AfterInstall`): its
+    /// buttons and Esc do nothing, so a click can't land on a surface that's leaving.
+    private var isClosingToOpen = false
 
-    init(preferences: Preferences, store: Store, launch: LaunchOptions, panel: PanelWindowController) {
+    init(
+        preferences: Preferences, store: Store, launch: LaunchOptions, panel: PanelWindowController,
+        updateCheck: UpdateCheck, running: SelfImage.Running = .current
+    ) {
+        self.updateCheck = updateCheck
+        self.running = running
         self.preferences = preferences
         self.store = store
         self.launch = launch
         self.panel = panel
-        panel.onDismiss = { [weak self] model in self?.handle(Self.dismissAction(for: model.board), for: model) }
+        panel.onDismiss = { [weak self] model in self?.handle(Self.dismissAction(for: model), for: model) }
     }
 
     /// What Esc and the window's close button mean on each board.
-    private static func dismissAction(for board: Board) -> PanelAction {
-        switch board {
+    private static func dismissAction(for model: PanelModel) -> PanelAction {
+        switch model.board {
         case .done, .refused: .close
         case .installing: .cancelInstall
+        case .main, .update: model.isQuitting ? .cancelInstall : .notNow
         case .licence: .disagreeLicence
         default: .notNow
         }
@@ -139,6 +151,12 @@ final class InstallController {
             Log.panel.info("summary shown \(model.dmg.lastPathComponent, privacy: .public)")
         }
         if case .installing = state, installingShownAt == nil { installingShownAt = .now }
+        if model.selfImage == nil, let summary = state.summary,
+            let offer = SelfImage.offer(for: summary, running: running)
+        {
+            showSelfImage(offer, model: model, session: session)
+            return
+        }
         refreshRunningApp(for: model)
         switch state {
         case .reading:
@@ -162,6 +180,19 @@ final class InstallController {
         }
     }
 
+    /// Drop's own disk image: the name, version, icon and bundle ID are all it needs, so the
+    /// session stops here, before anything is staged, and its later states are ignored.
+    private func showSelfImage(_ offer: SelfImage, model: PanelModel, session: InstallSession) {
+        model.selfImage = offer
+        if self.session === session {
+            self.session = nil
+            updatesTask?.cancel()
+            updatesTask = nil
+            Task { await session.cancel() }
+        }
+        if panel.model !== model { panel.show(model) }
+    }
+
     private func refreshRunningApp(for model: PanelModel) {
         guard let summary = model.summary, summary.update != nil, let bundleID = summary.bundleIdentifier else {
             model.appIsRunning = false
@@ -181,7 +212,7 @@ final class InstallController {
     // MARK: Actions
 
     private func handle(_ action: PanelAction, for model: PanelModel) {
-        guard model === current else { return }
+        guard model === current, !isClosingToOpen else { return }
         switch action {
         case .install, .installAnyway:
             if model.installStartedAt == nil { model.installStartedAt = .now }
@@ -193,7 +224,12 @@ final class InstallController {
             } else {
                 install(model)
             }
-        case .notNow, .disagreeLicence, .cancelInstall: dismiss(model)
+        case .cancelInstall:
+            // Esc and the close button reach here too: once the copy is being swapped into
+            // place, cancelling has to wait for it like the button does.
+            guard model.buttons.secondary.isEnabled || model.board != .installing else { return }
+            dismiss(model)
+        case .notNow, .disagreeLicence: dismiss(model)
         case .close: finish(model)
         case .openImage:
             DiskImageHandler.openWithMounter(model.dmg)
@@ -219,65 +255,106 @@ final class InstallController {
             guard !password.isEmpty else { return }
             Task { await session?.providePassword(password) }
         case .changeLocation(let location): changeLocation(model, to: location)
+        case .checkForUpdates:
+            finish(model)
+            updateCheck.run()
         }
     }
 
+    /// Install, Update, or Quit and Update: one press runs to installed (`QuitThenInstall`).
     private func install(_ model: PanelModel) {
-        guard let session, !model.isBusy else { return }
+        guard let session, !model.isBusy, !model.isQuitting else { return }
         model.isBusy = true
         let pendingSwitch = switchTask
         Task {
             // A location change in flight finishes first, so the running-copy check and the
             // install both see the new destination.
             await pendingSwitch?.value
-            var reopen = false
-            if let summary = model.summary, summary.update != nil, let bundleID = summary.bundleIdentifier,
-                let running = runningCopy(bundleID: bundleID, bundleName: summary.bundleName, model: model)
-            {
-                guard await Self.quit(running) else {
-                    model.quitFailed = true
-                    model.isBusy = false
-                    return
-                }
-                reopen = true
-            }
-            model.reopenAfterInstall = reopen
             model.isBusy = false
-            await session.install()
+            guard current === model else { return }
+            var running: NSRunningApplication?
+            if let summary = model.summary, summary.update != nil, let bundleID = summary.bundleIdentifier {
+                running = runningCopy(bundleID: bundleID, bundleName: summary.bundleName, model: model)
+            }
+            model.reopenAfterInstall = false
+            let sequence = QuitThenInstall(
+                running: running.map(RunningApp.init),
+                isCurrent: { [weak self] in self?.current === model },
+                show: { [weak self] step in
+                    switch step {
+                    case .quitting:
+                        model.quitFailed = false
+                        model.isQuitting = true
+                    case .installing:
+                        model.isQuitting = false
+                        model.reopenAfterInstall = running != nil
+                        self?.refreshRunningApp(for: model)
+                    case .quitFailed:
+                        model.isQuitting = false
+                        model.quitFailed = true
+                        self?.refreshRunningApp(for: model)
+                    }
+                },
+                install: {
+                    // The check can end in a warning while the app was quitting. That board
+                    // asks first (Install Anyway), so the press that came before it must
+                    // not install past it.
+                    if case .warning = model.state, running != nil { return }
+                    await session.install()
+                })
+            _ = await sequence.run()
         }
     }
-
-    /// Asks the app to quit, as the Quit menu item would, and waits. Never forces: an app
-    /// with unsaved work may ask the user, and the user may say no.
-    private static func quit(_ app: NSRunningApplication) async -> Bool {
-        guard app.terminate() else { return app.isTerminated }
-        let deadline = ContinuousClock.now + Theme.Timing.quitTimeout
-        while !app.isTerminated, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: quitCheckInterval)
-        }
-        return app.isTerminated
-    }
-
-    /// How often Quit and Update looks whether the app has gone, while it waits.
-    private static let quitCheckInterval: Duration = .milliseconds(200)
 
     private func installed(_ app: URL, model: PanelModel, session: InstallSession) {
         model.installedApp = app
         if case .watched = model.origin { store.markHandled(model.dmg) }
-        if preferences.openAfterInstall || model.reopenAfterInstall { NSWorkspace.shared.open(app) }
+        let plan = AfterInstallPlan(
+            openAfterInstall: preferences.openAfterInstall, wasRunning: model.reopenAfterInstall)
         let trashFolder = launch.trashFolder
-        Task {
-            if model.trashImage {
-                await session.waitUntilDone()
-                do {
-                    model.trashedImage = try Self.trash(model.dmg, into: trashFolder)
-                } catch {
-                    Log.app.error("Couldn't trash the disk image: \(error, privacy: .public)")
-                }
+        // The image is trashed whether or not the panel is still up to offer Undo.
+        let trashing = Task {
+            guard model.trashImage else { return }
+            await session.waitUntilDone()
+            do {
+                model.trashedImage = try Self.trash(model.dmg, into: trashFolder)
+            } catch {
+                Log.app.error("Couldn't trash the disk image: \(error, privacy: .public)")
             }
-            // The popup closes by itself after a while; the window the user opened never does.
-            if case .watched = model.origin { scheduleAutoClose(model) }
         }
+        Task {
+            switch await afterInstall(for: model).run(plan, app: app) {
+            case .closed:
+                finish(model)
+            case .showsInstalled:
+                await trashing.value
+                // The popup closes by itself after a while; the window the user opened never does.
+                if case .watched = model.origin, current === model { scheduleAutoClose(model) }
+            case .superseded:
+                break
+            }
+        }
+    }
+
+    /// `AfterInstall` over the real panel and Launch Services, for `model`.
+    private func afterInstall(for model: PanelModel) -> AfterInstall {
+        AfterInstall(
+            hold: { try? await Task.sleep(for: Theme.Motion.installedHold) },
+            hideSurface: { [weak self] in
+                guard let self, self.current === model else { return false }
+                self.isClosingToOpen = true
+                guard await self.panel.hideForOpen(), self.current === model else {
+                    if self.current === model { self.isClosingToOpen = false }
+                    return false
+                }
+                return true
+            },
+            restoreSurface: { [weak self] in
+                guard let self, self.current === model else { return }
+                self.isClosingToOpen = false
+                self.panel.restoreHidden()
+            },
+            open: AfterInstall.openApplication)
     }
 
     private func scheduleAutoClose(_ model: PanelModel) {
@@ -349,6 +426,7 @@ final class InstallController {
     private func finish(_ model: PanelModel) {
         guard current === model else { return }
         closeTask?.cancel()
+        isClosingToOpen = false
         if case .watched = model.origin { store.markHandled(model.dmg) }
         if let session, !model.state.isFinal { Task { await session.cancel() } }
         updatesTask?.cancel()

@@ -501,6 +501,10 @@ enum Theme {
             nsColor: .nidus(light: 0x2F7A3A, dark: 0x8DBB82, contrast: 0x225C2B, darkContrast: 0xA9D19F))
         /// The Installed check's fill, with white on it in both modes (5.3:1).
         static let success = Color(nsColor: .nidus(light: 0x2F7A3A, dark: 0x2F7A3A, contrast: 0x225C2B))
+        /// The info callout's moss tint: nothing is wrong, here is what happens.
+        static let mossFill = Color(nsColor: .mossFill)
+        /// The info callout's icon: solid moss on light, light moss on dark.
+        static let mossIcon = Color(nsColor: .focusRing)
         static let warnFill = Color(nsColor: .warnFill)
         static let warnText = Color(
             nsColor: .nidus(light: 0x6B4300, dark: 0xF5D3A1, contrast: 0x4A2F00, darkContrast: 0xFFE7C4))
@@ -549,6 +553,11 @@ enum Theme {
         static let skipProgressBelow: Duration = .milliseconds(400)
         /// The progress capsule's unfilled part: moss at this opacity.
         static let progressTrackOpacity: Double = 0.22
+        /// The capsule while Drop waits for an app to quit: a band this share of its width,
+        /// moss at this opacity at its middle, crossing once per `shimmerDuration` seconds.
+        static let shimmerBand: Double = 0.45
+        static let shimmerOpacity: Double = 0.3
+        static let shimmerDuration: Double = 1.4
 
         /// The drawn Installed check.
         static var checkDraw: Animation { .easeInOut(duration: 0.6) }
@@ -556,6 +565,18 @@ enum Theme {
         static var checkScale: Animation { .spring(response: 0.35, dampingFraction: 0.7) }
         /// The beat between the badge scaling in and the stroke starting.
         static let checkBeat: Double = 0.15
+
+        /// With "Open the app when it's installed" on, Installed stays up this long before
+        /// the surface closes and the app opens, so the tick lands and the result reads.
+        static let installedHold: Duration = .milliseconds(800)
+        /// The install window's exit before the app opens: it fades and shrinks a little,
+        /// easing in, so the app's own launch follows without a gap. Reduce Motion: the
+        /// fade alone.
+        static let windowExitDuration: Double = 0.22
+        static let windowExitScale: CGFloat = 0.97
+        /// The popup's exit before the app opens: back off the edge it slid in from,
+        /// easing in and fading. Reduce Motion: the fade alone.
+        static let popupExitDuration: Double = 0.22
 
         /// Numbers that change roll: progress, sizes.
         static var numbers: Animation { .easeInOut(duration: 0.45) }
@@ -646,6 +667,9 @@ extension NSColor {
     static let infoFill = nidus(
         light: NSColor(hex: ink, alpha: 0.04), dark: NSColor(hex: paperHex, alpha: 0.06),
         contrast: NSColor(hex: ink, alpha: 0.08), darkContrast: NSColor(hex: paperHex, alpha: 0.12))
+    static let mossFill = nidus(
+        light: NSColor(hex: 0xEEF3EC), dark: NSColor(hex: 0x8DBB82, alpha: 0.14), contrast: NSColor(hex: 0xE4EDE1),
+        darkContrast: NSColor(hex: 0x8DBB82, alpha: 0.2))
     static let warnFill = nidus(
         light: NSColor(hex: 0xFFF4E0), dark: NSColor(hex: 0xFFAA3C, alpha: 0.14), contrast: NSColor(hex: 0xFFF4E0),
         darkContrast: NSColor(hex: 0xFFAA3C, alpha: 0.2))

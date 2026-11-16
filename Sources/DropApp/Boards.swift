@@ -8,23 +8,92 @@ import Verifier
 /// and the centred window (`PanelPresentation`).
 struct PanelView: View {
     @Bindable var model: PanelModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The boards that are different views. Within one, the board's own views animate
+    /// their changes in place; from one to another (licence to ready, password to ready,
+    /// warning to installing) the two cross-fade, top edges together.
+    private enum Kind: Hashable {
+        case install, update, warning, refused, fallback, licence, password, selfImage, hidden
+    }
+
+    private var kind: Kind {
+        switch model.board {
+        case .main, .update, .installing, .done: model.isUpdate ? .update : .install
+        case .warning: .warning
+        case .refused: .refused
+        case .fallback: .fallback
+        case .licence: .licence
+        case .password: .password
+        case .selfImage: .selfImage
+        case .hidden: .hidden
+        }
+    }
 
     var body: some View {
-        Group {
-            switch model.board {
-            case .main: MainBoard(model: model)
-            case .update: UpdateBoard(model: model)
-            case .installing, .done: MainBoard(model: model)
-            case .warning: WarningBoard(model: model)
-            case .refused: RefusedBoard(model: model)
-            case .fallback: FallbackBoard(model: model)
-            case .licence: LicenceBoard(model: model)
-            case .password: PasswordBoard(model: model)
-            case .hidden: EmptyView()
+        ZStack(alignment: .top) {
+            Group {
+                switch kind {
+                case .install: MainBoard(model: model)
+                case .update: UpdateBoard(model: model)
+                case .warning: WarningBoard(model: model)
+                case .refused: RefusedBoard(model: model)
+                case .fallback: FallbackBoard(model: model)
+                case .licence: LicenceBoard(model: model)
+                case .password: PasswordBoard(model: model)
+                case .selfImage: SelfImageBoard(model: model)
+                case .hidden: EmptyView()
+                }
             }
+            .id(kind)
+            .transition(.opacity)
         }
+        .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: kind)
         .disabled(model.isBusy)
         .onHover { model.isHovered = $0 }
+    }
+}
+
+/// The install flow's bottom row, for the Main and Update boards: the link, the secondary
+/// and the primary capsule, each one view from ready to done (`PanelButtons`), so labels
+/// swap, the fill grows and widths change in place.
+struct FlowButtonRow: View {
+    let model: PanelModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let buttons = model.buttons
+        ButtonRow {
+            ZStack(alignment: .leading) {
+                switch buttons.link {
+                case .openImage(let isEnabled):
+                    Button("Open disk image") { model.send(.openImage) }.buttonStyle(.nidusLink())
+                        .disabled(!isEnabled)
+                        .transition(.opacity)
+                case .undoTrash(let isVisible):
+                    Button("Undo") { model.send(.undoTrash) }.buttonStyle(.nidusLink())
+                        .opacity(isVisible ? 1 : 0)
+                        .disabled(!isVisible)
+                        .accessibilityHidden(!isVisible)
+                        .transition(.opacity)
+                }
+            }
+        } trailing: {
+            Button {
+                model.send(buttons.secondary.action)
+            } label: {
+                SwapLabel(title: buttons.secondary.title)
+            }
+            .buttonStyle(.nidusSecondary)
+            .disabled(!buttons.secondary.isEnabled)
+            StepCapsule(step: buttons.primary) { model.send($0) }
+        }
+        .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.popup, value: layoutKey(buttons))
+    }
+
+    /// Everything that changes the row's layout: labels and which link shows.
+    private func layoutKey(_ buttons: PanelButtons) -> String {
+        "\(buttons.secondary.title)|\(buttons.primary.sizingLabel)|\(buttons.link)"
     }
 }
 
@@ -79,7 +148,7 @@ struct MainBoard: View {
             SignerCard(model: model)
             VStack(alignment: .leading, spacing: Theme.Settings.rowSpacing) {
                 HStack(spacing: Theme.Card.calloutSpacing) {
-                    Text("Install to").foregroundStyle(Theme.Colour.bodyText)
+                    Text("Install to").foregroundStyle(Theme.Colour.bodyText).dimsWhenDisabled()
                     Spacer()
                     NidusSelect(
                         label: "Install to", selection: model.location, options: InstallLocation.selectOptions
@@ -89,38 +158,9 @@ struct MainBoard: View {
                     .toggleStyle(.nidusSwitch)
             }
             .font(Theme.Font.body)
-            .disabled(working || done)
-            ButtonRow {
-                if done {
-                    Button("Undo") { model.send(.undoTrash) }.buttonStyle(.nidusLink())
-                        .opacity(model.trashedImage == nil ? 0 : 1)
-                        .disabled(model.trashedImage == nil)
-                        .accessibilityHidden(model.trashedImage == nil)
-                } else {
-                    Button("Open disk image") { model.send(.openImage) }.buttonStyle(.nidusLink())
-                        .disabled(working)
-                }
-            } trailing: {
-                if done {
-                    Button("Show in Finder") { model.send(.showAppInFinder) }.buttonStyle(.nidusSecondary)
-                    Button("Open \(model.appName)") { model.send(.openApp) }.buttonStyle(.nidusPrimary)
-                        .keyboardShortcut(.defaultAction)
-                } else if working {
-                    Button("Cancel") { model.send(.cancelInstall) }.buttonStyle(.nidusSecondary)
-                        .keyboardShortcut(.cancelAction)
-                    if model.skipsProgress {
-                        Button("Install") {}.buttonStyle(.nidusPrimary)
-                    } else {
-                        ProgressCapsule(fraction: min(model.progress?.fraction ?? 0, Theme.Motion.progressCeiling))
-                    }
-                } else {
-                    Button("Not now") { model.send(.notNow) }.buttonStyle(.nidusSecondary)
-                    Button("Install") { model.send(.install) }.buttonStyle(.nidusPrimary)
-                        .keyboardShortcut(.defaultAction)
-                }
-            }
-            .animation(reduceMotion ? nil : Theme.Motion.popup, value: model.board)
-            .padding(.top, Theme.Panel.buttonRowTopPadding)
+            .disabled(!model.buttons.controlsEnabled)
+            FlowButtonRow(model: model)
+                .padding(.top, Theme.Panel.buttonRowTopPadding)
         }
     }
 
@@ -215,8 +255,17 @@ struct WaitingRow: View {
 
 // MARK: - Already installed (update)
 
+/// The update of an installed copy, from the prompt to done on one board: Quit and Update
+/// is one press, and the primary capsule then shows each step ("Quitting …", "Updating …
+/// N%", "Open …") while the tick lands on the icon. Nothing else on the board moves.
 struct UpdateBoard: View {
     @Bindable var model: PanelModel
+
+    /// The note about the running copy stays from the prompt to done, so the board keeps
+    /// its height when the app has quit.
+    private var showsRunningNote: Bool {
+        model.appIsRunning || model.isQuitting || model.quitFailed || model.reopenAfterInstall
+    }
 
     var body: some View {
         PanelCard {
@@ -231,26 +280,46 @@ struct UpdateBoard: View {
                     Text(model.summary?.version ?? "New").fontWeight(.semibold).foregroundStyle(Theme.Colour.bodyText)
                 }
                 .monospacedDigit()
+            } badge: {
+                if model.board == .done {
+                    DrawnCheck(lineWidth: Theme.Icon.badgeStroke)
+                        .padding(Theme.Icon.badgeBorder)
+                        .background(Circle().fill(Theme.Colour.surface))
+                        .frame(width: Theme.Icon.badge, height: Theme.Icon.badge)
+                        .offset(x: Theme.Icon.badgeOffset, y: Theme.Icon.badgeOffset)
+                }
             }
             InfoCard {
                 developerRow
                 CardRow(symbol: "trash", text: Text("The old version goes to the Trash."))
             }
-            if model.appIsRunning {
+            if showsRunningNote {
+                // Updated is good news: the moss info callout. The steps before stay amber.
+                let updated = model.board == .done
                 Callout(
-                    symbol: "exclamationmark.circle",
-                    message: model.quitFailed
-                        ? "\(model.appName) didn't quit. Quit it yourself, then try again."
-                        : "\(model.appName) is open. Drop quits it first, then opens the new version.")
+                    kind: updated ? .info : .warn, symbol: updated ? "info.circle" : "exclamationmark.circle",
+                    message: runningNote, reserving: runningNotes)
             }
-            ButtonRow {
-                Button("Not now") { model.send(.notNow) }.buttonStyle(.nidusSecondary)
-                Button(model.appIsRunning ? "Quit and Update" : "Update") { model.send(.install) }
-                    .buttonStyle(.nidusPrimary)
-                    .keyboardShortcut(.defaultAction)
-            }
+            FlowButtonRow(model: model)
         }
     }
+
+    /// The running-app note for the step on show. Each step says only what is true then:
+    /// open (and quitting) before the swap, quit while it runs, updated at done.
+    private var runningNote: String {
+        if model.board == .done { return updatedNote }
+        if model.quitFailed { return didNotQuitNote }
+        if model.reopenAfterInstall { return hasQuitNote }
+        return openNote
+    }
+
+    /// Every note `runningNote` can show, so the callout keeps the height of the tallest.
+    private var runningNotes: [String] { [openNote, didNotQuitNote, hasQuitNote, updatedNote] }
+
+    private var openNote: String { "\(model.appName) is open. Drop quits it first, then opens the new version." }
+    private var didNotQuitNote: String { "\(model.appName) didn't quit. Quit it yourself, then try again." }
+    private var hasQuitNote: String { "\(model.appName) has quit. Drop opens the new version once it's in place." }
+    private var updatedNote: String { "\(model.appName) is updated." }
 
     @ViewBuilder private var developerRow: some View {
         StatusSwap(key: model.summary?.update?.developer == nil) {
@@ -267,6 +336,35 @@ struct UpdateBoard: View {
                 CardRow(symbol: "shield", text: Text("The installed copy isn't signed, so Drop can't compare."))
             case nil:
                 WaitingRow(text: "Checking the signature\u{2026}")
+            }
+        }
+    }
+}
+
+// MARK: - Drop's own disk image
+
+/// SelfInstall board: the image holds Drop. A newer one points to Check for Updates; the
+/// same or an older one has nothing to install. Never Install or Quit and Update.
+struct SelfImageBoard: View {
+    let model: PanelModel
+
+    var body: some View {
+        if let offer = model.selfImage {
+            PanelCard {
+                ImageHeader(model: model)
+                TitleRow(icon: model.icon, title: offer.title) {
+                    Text(offer.subtitle).monospacedDigit()
+                }
+                Callout(kind: .info, symbol: "info.circle", message: offer.message)
+                ButtonRow {
+                    Button("Open disk image") { model.send(.openImage) }.buttonStyle(.nidusLink())
+                } trailing: {
+                    if let secondary = offer.secondary {
+                        Button(secondary.title) { model.send(secondary.action) }.buttonStyle(.nidusSecondary)
+                    }
+                    Button(offer.primary.title) { model.send(offer.primary.action) }.buttonStyle(.nidusPrimary)
+                        .keyboardShortcut(.defaultAction)
+                }
             }
         }
     }

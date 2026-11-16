@@ -6,6 +6,8 @@ import ReaderCore
 struct BundleInfo: Sendable, Equatable {
     var displayName: String?
     var shortVersion: String?
+    /// `CFBundleVersion`, the build number.
+    var buildVersion: String?
     var identifier: String?
     var iconFile: String?
 
@@ -25,6 +27,7 @@ struct BundleInfo: Sendable, Equatable {
         }
         displayName = string("CFBundleDisplayName") ?? string("CFBundleName")
         shortVersion = string("CFBundleShortVersionString")
+        buildVersion = string("CFBundleVersion")
         identifier = string("CFBundleIdentifier")
         iconFile = string("CFBundleIconFile")
     }

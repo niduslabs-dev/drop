@@ -22,7 +22,15 @@
     /// reaches macOS; closing the window quits). `select-settings`, `select-main` (the
     /// popup) and `select-window` open that surface's Install to menu, plain, with `-hover`
     /// (the pointer's highlight on the second row) or `-key` (Down pressed once); they also
-    /// print `DEMO_MENU <id>` and both frames for measuring.
+    /// print `DEMO_MENU <id>` and both frames for measuring. `open-after` (the popup) and
+    /// `window-open-after` play ready, working, done, then the close before the app opens
+    /// ("Open the app when it's installed"), with an opener that opens nothing; `-fail`
+    /// makes it fail, so Installed comes back. They print `DEMO_STEP <name> <frame> visible|hidden`
+    /// at each step. `update-flow` and `window-update-flow` play Quit and Update as one
+    /// press through the real `QuitThenInstall`, with a stand-in app that quits after a
+    /// moment (`-timeout`: never, with a short timeout) and a stand-in install. `self-newer`,
+    /// `self-same` and their `window-` forms show Drop's own disk image (1.0.1 and 1.0.0
+    /// against a running 1.0.0); `done-update` is the Update board at done, after a quit.
     @MainActor
     enum Demo {
         static let states = [
@@ -38,7 +46,10 @@
             "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
             "select-main", "select-main-hover", "select-window", "select-window-key", "update-ready",
             "update-available", "update-ready-plain", "settings-update", "settings-update-idle",
-            "settings-update-bottom", "settings-update-idle-bottom",
+            "settings-update-bottom", "settings-update-idle-bottom", "open-after", "open-after-fail",
+            "window-open-after", "window-open-after-fail", "update-flow", "update-flow-timeout",
+            "window-update-flow", "window-update-flow-timeout", "self-newer", "self-same", "window-self-newer",
+            "window-self-same", "done-update",
         ]
 
         private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
@@ -52,6 +63,11 @@
         }
 
         static func run(_ state: String, app: AppDelegate) {
+            // Before the `update-` states, which are Drop's own update popup.
+            if state.contains("update-flow") {
+                runUpdateFlow(state, app: app)
+                return
+            }
             if state.hasPrefix("select-") {
                 runSelect(state, app: app)
                 return
@@ -62,6 +78,10 @@
             }
             if state.hasPrefix("update-") || state.hasPrefix("settings-update") {
                 runUpdate(state, app: app)
+                return
+            }
+            if state.contains("open-after") {
+                runOpenAfter(state, app: app)
                 return
             }
             if state.hasPrefix("settings") {
@@ -88,7 +108,8 @@
             }
             let model = makeModel(state)
             model.send = { action in
-                if action == .close || action == .notNow { NSApp.terminate(nil) }
+                if action == .checkForUpdates { UpdateCheck.live(app.updates).run() }
+                if [.close, .notNow, .checkForUpdates].contains(action) { NSApp.terminate(nil) }
             }
             Task {
                 app.panel.show(model)
@@ -217,6 +238,129 @@
             }
         }
 
+        /// The whole install on one surface, through the real `AfterInstall` and the real
+        /// exit, with a stand-in opener: ready, working at 30% and 62%, done, the hold, the
+        /// close. Quits when it's over.
+        private static func runOpenAfter(_ state: String, app: AppDelegate) {
+            let fails = state.hasSuffix("-fail")
+            let model = makeModel(state.hasPrefix("window") ? "window" : "main")
+            let total = 84 * megabyte
+            func step(_ name: String) {
+                let frame = app.panel.frame
+                let shown = app.panel.isVisible ? "visible" : "hidden"
+                print("DEMO_STEP \(name) \(frame.minX) \(frame.minY) \(frame.width) \(frame.height) \(shown)")
+                fflush(stdout)
+            }
+            Task {
+                app.panel.show(model)
+                try? await Task.sleep(for: settle)
+                report(app.panel.windowNumber)
+                step("ready")
+                try? await Task.sleep(for: openAfterLead)
+                for percent: UInt64 in [30, 62] {
+                    model.state = .installing(
+                        linea, InstallProgress(bytesDone: total * percent / 100, bytesTotal: total))
+                    step("working-\(percent)")
+                    try? await Task.sleep(for: openAfterBeat)
+                }
+                model.state = .installed(URL(filePath: "/Applications/Linea.app"))
+                step("done")
+                let flow = AfterInstall(
+                    hold: { try? await Task.sleep(for: Theme.Motion.installedHold) },
+                    hideSurface: {
+                        step("closing")
+                        return await app.panel.hideForOpen()
+                    },
+                    restoreSurface: { app.panel.restoreHidden() },
+                    open: { _ in
+                        step("open")
+                        return !fails
+                    })
+                let outcome = await flow.run(.closeThenOpen, app: URL(filePath: "/Applications/Linea.app"))
+                step(outcome == .closed ? "closed" : "restored")
+                try? await Task.sleep(for: openAfterLead)
+                step("end")
+                NSApp.terminate(nil)
+            }
+        }
+
+        /// Quit and Update from one press: the prompt, "Quitting …" while a stand-in app
+        /// takes a moment to go, "Updating … N%", then Installed. Quits when it's over.
+        private static func runUpdateFlow(_ state: String, app: AppDelegate) {
+            let quits = !state.hasSuffix("-timeout")
+            let model = makeModel(state.hasPrefix("window") ? "window-update-running" : "update-running")
+            guard let summary = model.summary else { return }
+            let total = 84 * megabyte
+            func step(_ name: String) {
+                let frame = app.panel.frame
+                print("DEMO_STEP \(name) \(frame.minX) \(frame.minY) \(frame.width) \(frame.height) visible")
+                fflush(stdout)
+            }
+            var gone = false
+            let running = RunningApp(
+                isTerminated: { gone },
+                requestQuit: { true },
+                terminations: {
+                    AsyncStream { continuation in
+                        guard quits else { return }
+                        Task {
+                            try? await Task.sleep(for: updateFlowQuit)
+                            gone = true
+                            continuation.yield()
+                        }
+                    }
+                })
+            let sequence = QuitThenInstall(
+                running: running, timeout: updateFlowQuit * 2, isCurrent: { true },
+                show: { shown in
+                    switch shown {
+                    case .quitting:
+                        model.isQuitting = true
+                        step("quitting")
+                    case .installing:
+                        model.isQuitting = false
+                        model.reopenAfterInstall = true
+                        model.appIsRunning = false
+                    case .quitFailed:
+                        model.isQuitting = false
+                        model.quitFailed = true
+                        step("quit-failed")
+                    }
+                },
+                install: {
+                    for percent: UInt64 in [30, 62] {
+                        model.state = .installing(
+                            summary, InstallProgress(bytesDone: total * percent / 100, bytesTotal: total))
+                        step("updating-\(percent)")
+                        try? await Task.sleep(for: openAfterBeat)
+                    }
+                    model.state = .installing(summary, InstallProgress(bytesDone: total, bytesTotal: total))
+                    step("swapping")
+                    try? await Task.sleep(for: openAfterBeat)
+                    model.state = .installed(URL(filePath: "/Applications/Linea.app"))
+                    step("done")
+                })
+            Task {
+                app.panel.show(model)
+                try? await Task.sleep(for: settle)
+                report(app.panel.windowNumber)
+                step("ready")
+                try? await Task.sleep(for: openAfterLead)
+                _ = await sequence.run()
+                try? await Task.sleep(for: openAfterLead)
+                step("end")
+                NSApp.terminate(nil)
+            }
+        }
+
+        /// How long the update flow's stand-in app takes to quit.
+        private static let updateFlowQuit: Duration = .milliseconds(1400)
+
+        /// Time for a capture loop to start before the sequence moves, and to see its end.
+        private static let openAfterLead: Duration = .milliseconds(1500)
+        /// How long each working step of the open-after sequence stays up.
+        private static let openAfterBeat: Duration = .milliseconds(700)
+
         /// Long enough for the popup's spring and the staged reveals to finish.
         private static let settle: Duration = .milliseconds(2600)
 
@@ -237,6 +381,8 @@
             let image: String
             switch state {
             case "warning", "unsigned": image = "Tinkerpad-0.9.dmg"
+            case "self-newer": image = "Drop-1.0.1.dmg"
+            case "self-same": image = "Drop-1.0.0.dmg"
             case "pkg", "case", "wontattach": image = "Vaultr-Setup.dmg"
             case "password", "password-wrong": image = "Ledgerly-Pro.dmg"
             default: image = "Linea-2.4.1.dmg"
@@ -281,6 +427,20 @@
                 model.state = .installed(URL(filePath: "/Applications/Linea.app"))
                 model.trashedImage = URL(filePath: "/Users/Shared/.Trash/\(image)")
                 model.installDuration = .milliseconds(1200)
+            case "self-newer", "self-same":
+                model.iconOverride = .image(NSApp.applicationIconImage)
+                let version = state == "self-newer" ? "1.0.1" : "1.0.0"
+                let drop = AppSummary(
+                    bundleName: "Drop.app", name: "Drop", version: version,
+                    bundleIdentifier: SelfImage.releaseIdentifier, size: nil, buildVersion: version)
+                model.state = .identified(drop)
+                model.selfImage = SelfImage.offer(
+                    for: drop, running: SelfImage.Running(bundleIdentifier: nil, version: "1.0.0", build: "1.0.0"))
+            case "done-update":
+                linea.update = .init(installedVersion: "2.3.0", developer: .same(teamID: "ABCDE12345"))
+                model.state = .ready(linea)
+                model.reopenAfterInstall = true
+                model.state = .installed(URL(filePath: "/Applications/Linea.app"))
             case "update", "update-running":
                 linea.update = .init(installedVersion: "2.3.0", developer: .same(teamID: "ABCDE12345"))
                 model.state = .ready(linea)
