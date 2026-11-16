@@ -72,5 +72,8 @@ let package = Package(
             name: "InstallerTests",
             dependencies: ["Installer", "DMGReader", "DiskImage", "Extractor", "Mounter", "Verifier"]),
         .testTarget(name: "OnboardingTests", dependencies: ["Onboarding"]),
+        // The app's pure logic (activation policy, layout rhythm), tested through
+        // `@testable import` of the executable target.
+        .testTarget(name: "DropAppTests", dependencies: ["DropApp"]),
     ]
 )

@@ -12,6 +12,17 @@ extension EnvironmentValues {
     @Entry var panelPresentation = PanelPresentation.popup
     /// The centred window's title bar height, read from the window.
     @Entry var titleBarHeight: CGFloat = 0
+    /// Cards at the popup's 400 pt scale (radius 10, padding 12) or window scale (radius 14,
+    /// padding 12 × 16), per the guide's InfoCard.
+    @Entry var cardScale = CardScale.panel
+}
+
+enum CardScale {
+    case panel
+    case window
+
+    var cornerRadius: CGFloat { self == .panel ? Theme.Card.cornerRadius : Theme.Radius.card }
+    var horizontalPadding: CGFloat { self == .panel ? Theme.Card.horizontalPadding : Theme.Space.l }
 }
 
 /// The card every panel board sits in. As a popup: rounded, the surface at 92% over the
@@ -208,15 +219,96 @@ struct InfoCard<Content: View>: View {
     var kind = CardKind.ok
     var spacing: CGFloat = Theme.Card.rowSpacing
     @ViewBuilder var content: Content
+    @Environment(\.cardScale) private var scale
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: scale.cornerRadius, style: .continuous)
         VStack(alignment: .leading, spacing: spacing) { content }
             .font(Theme.Font.small)
             .foregroundStyle(kind.text)
             .padding(.vertical, Theme.Card.verticalPadding)
-            .padding(.horizontal, Theme.Card.horizontalPadding)
+            .padding(.horizontal, scale.horizontalPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(kind.fill, in: RoundedRectangle(cornerRadius: Theme.Card.cornerRadius, style: .continuous))
+            .background(kind.fill, in: shape)
+            .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Radius.cardHairline) }
+    }
+}
+
+/// A window-scale card (r14, 0.5 hairline, no shadow) holding SettingsRows: the install
+/// window's options and every Settings group.
+struct RowCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+        VStack(spacing: 0) {
+            Group(subviews: content) { rows in
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 {
+                        Rectangle().fill(Theme.Colour.hairline).frame(height: Theme.Radius.cardHairline)
+                            .padding(.horizontal, Theme.Row.dividerInset)
+                    }
+                    row
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(Theme.Colour.infoFill, in: shape)
+        .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Radius.cardHairline) }
+    }
+}
+
+/// The SettingsRow primitive: a title (with an optional ⓘ and one caption line) on the
+/// left and one control on the right, padded 16 × 12.
+struct SettingsRow<Control: View, Info: View>: View {
+    let title: String
+    var caption: String?
+    @ViewBuilder var info: Info
+    @ViewBuilder var control: Control
+
+    var body: some View {
+        HStack(spacing: Theme.Row.labelControlGap) {
+            VStack(alignment: .leading, spacing: Theme.Row.captionGap) {
+                HStack(spacing: Theme.Row.titleInfoGap) {
+                    Text(title).font(Theme.Font.body).foregroundStyle(Theme.Colour.bodyText)
+                    info
+                }
+                if let caption {
+                    Text(caption).font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            control
+        }
+        .padding(.horizontal, Theme.Row.horizontalPadding)
+        .padding(.vertical, Theme.Row.verticalPadding)
+    }
+}
+
+extension SettingsRow where Info == EmptyView {
+    init(_ title: String, caption: String? = nil, @ViewBuilder control: () -> Control) {
+        self.init(title: title, caption: caption, info: { EmptyView() }, control: control)
+    }
+}
+
+/// A switch as a whole SettingsRow: the row toggles on click, Space toggles it when
+/// focused, and VoiceOver reads it as one switch.
+struct SwitchRow: View {
+    let title: String
+    var caption: String?
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Text(title).font(Theme.Font.body).foregroundStyle(Theme.Colour.bodyText)
+            if let caption {
+                Text(caption).font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText).lineLimit(1)
+            }
+        }
+        .toggleStyle(.nidusSwitch)
+        .padding(.horizontal, Theme.Row.horizontalPadding)
+        .padding(.vertical, Theme.Row.verticalPadding)
     }
 }
 

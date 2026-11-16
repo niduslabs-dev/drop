@@ -55,11 +55,12 @@ struct InstallSessionCorpusTests {
         let session = InstallSession(dmg: try Fixtures.sample("zed", "Zed-aarch64.dmg"), options: scratch.options())
         await session.start()
         let first = await waitFor(session) { $0.isSettled }
-        guard case .needsLicence(let licence) = first else {
+        guard case .needsLicence(let licence, let preview) = first else {
             Issue.record("expected needsLicence, got \(first)")
             return
         }
         #expect(!licence.languages.isEmpty)
+        #expect(preview?.name == "Zed", "the licence screen names the app, not the file")
         #expect(await session.stagingArea == nil, "nothing staged before the licence is accepted")
         await session.acceptLicence()
         let settled = await waitFor(session) {

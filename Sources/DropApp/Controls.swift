@@ -1,4 +1,6 @@
 import AppKit
+import Carbon.HIToolbox
+import Observation
 import SwiftUI
 
 // The Nidus component kit (Components.dc.html) as styles on real SwiftUI controls, so
@@ -34,19 +36,64 @@ extension View {
     }
 }
 
-/// The kit's focus ring: 3 pt of moss just outside the control's shape. Drawn only while
-/// the window is key: SwiftUI gives the first control focus as soon as a window shows,
-/// and a ring on a popup the user hasn't touched would suggest keys go there.
+/// The focusVisible behaviour: whether focus rings show. Hidden until the user presses a
+/// keyboard focus key (Tab, Shift-Tab or an arrow), then shown while they keep using the
+/// keyboard; any mouse click hides them again until the next such key. One value for the
+/// whole app, fed by a local event monitor, so every window agrees.
+@MainActor
+@Observable
+final class FocusVisibility {
+    static let shared = FocusVisibility()
+
+    private(set) var isVisible = false
+    @ObservationIgnored private var monitor: Any?
+
+    /// Tab, and the arrows, which move focus in lists and between buttons.
+    private static let focusKeys: Set<UInt16> = Set(
+        [kVK_Tab, kVK_LeftArrow, kVK_RightArrow, kVK_DownArrow, kVK_UpArrow].map { UInt16($0) })
+
+    /// Starts watching events. Called once at launch; later calls do nothing.
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [
+            .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+        ]) { event in
+            MainActor.assumeIsolated {
+                FocusVisibility.shared.observe(type: event.type, keyCode: event.type == .keyDown ? event.keyCode : 0)
+            }
+            return event
+        }
+    }
+
+    /// Applies one event: a focus key shows rings, a click hides them. Other keys (Space,
+    /// Return, typing) leave them as they are.
+    func observe(type: NSEvent.EventType, keyCode: UInt16) {
+        switch type {
+        case .keyDown where Self.focusKeys.contains(keyCode):
+            if !isVisible { isVisible = true }
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            if isVisible { isVisible = false }
+        default:
+            break
+        }
+    }
+}
+
+/// The kit's focus ring: solid moss, 2 pt, 2 pt outside the control's shape. Drawn only
+/// after keyboard use (`FocusVisibility`) and while the window is key: SwiftUI gives the
+/// first control focus as soon as a window shows, and a ring the user didn't ask for would
+/// suggest keys go there.
 struct FocusRing<S: InsettableShape>: ViewModifier {
     let isFocused: Bool
     let shape: S
     @Environment(\.appearsActive) private var appearsActive
 
     func body(content: Content) -> some View {
+        let shown = isFocused && appearsActive && FocusVisibility.shared.isVisible
         content.overlay {
-            shape.inset(by: -Theme.Control.focusRing / 2)
+            shape.inset(by: -(Theme.Control.focusRingOffset + Theme.Control.focusRing / 2))
                 .stroke(Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing)
-                .opacity(isFocused && appearsActive ? 1 : 0)
+                .opacity(shown ? 1 : 0)
                 .allowsHitTesting(false)
         }
     }
@@ -63,10 +110,15 @@ struct NidusButtonStyle: PrimitiveButtonStyle {
         case secondary
         case link(Color)
         case select
+        /// The label as drawn, with only the press shade and the focus ring: disclosure rows
+        /// and the ⓘ button.
+        case plain
     }
     enum Size {
         case regular
         case small
+        /// 240 × 38, for the install window and onboarding.
+        case hero
     }
 
     var kind: Kind = .secondary
@@ -82,6 +134,9 @@ extension PrimitiveButtonStyle where Self == NidusButtonStyle {
     static var nidusPrimary: NidusButtonStyle { NidusButtonStyle(kind: .primary) }
     static var nidusSecondary: NidusButtonStyle { NidusButtonStyle(kind: .secondary) }
     static var nidusSmall: NidusButtonStyle { NidusButtonStyle(kind: .secondary, size: .small) }
+    static var nidusHeroPrimary: NidusButtonStyle { NidusButtonStyle(kind: .primary, size: .hero) }
+    static var nidusHeroSecondary: NidusButtonStyle { NidusButtonStyle(kind: .secondary, size: .hero) }
+    static var nidusPlain: NidusButtonStyle { NidusButtonStyle(kind: .plain) }
     static func nidusLink(_ colour: Color = Theme.Colour.link, font: Font = Theme.Font.link) -> NidusButtonStyle {
         NidusButtonStyle(kind: .link(colour), font: font)
     }
@@ -111,13 +166,24 @@ private struct NidusButtonBody: View {
             .animation(Theme.Motion.enable, value: isEnabled)
     }
 
-    private var height: CGFloat { size == .small ? Theme.Button.smallHeight : Theme.Button.height }
+    private var height: CGFloat {
+        switch size {
+        case .small: Theme.Button.smallHeight
+        case .regular: Theme.Button.height
+        case .hero: Theme.Button.heroHeight
+        }
+    }
+
+    private var horizontalPadding: CGFloat { size == .small ? Theme.Button.smallPadding : Theme.Button.padding }
+
+    /// Hero capsules are a fixed 240 wide; the others fit their label.
+    private var heroWidth: CGFloat? { size == .hero ? Theme.Button.heroWidth : nil }
 
     private var shape: RoundedRectangle {
         switch kind {
         case .primary, .secondary: RoundedRectangle(cornerRadius: height / 2, style: .continuous)
         case .link: RoundedRectangle(cornerRadius: Theme.Button.linkFocusRadius, style: .continuous)
-        case .select: RoundedRectangle(cornerRadius: Theme.Control.cornerRadius, style: .continuous)
+        case .select, .plain: RoundedRectangle(cornerRadius: Theme.Control.cornerRadius, style: .continuous)
         }
     }
 
@@ -126,17 +192,17 @@ private struct NidusButtonBody: View {
         switch kind {
         case .primary:
             label
-                .font(font ?? Theme.Font.primaryButton)
+                .font(font ?? (size == .hero ? Theme.Font.heroPrimaryButton : Theme.Font.primaryButton))
                 .foregroundStyle(Theme.Colour.onAccent)
-                .padding(.horizontal, size == .small ? Theme.Button.smallPadding : Theme.Button.padding)
-                .frame(minHeight: height)
+                .padding(.horizontal, horizontalPadding)
+                .frame(minWidth: heroWidth, minHeight: height)
                 .background(primaryFill, in: shape)
         case .secondary:
             label
-                .font(font ?? Theme.Font.button)
+                .font(font ?? (size == .hero ? Theme.Font.heroButton : Theme.Font.button))
                 .foregroundStyle(Theme.Colour.bodyText)
-                .padding(.horizontal, size == .small ? Theme.Button.smallPadding : Theme.Button.padding)
-                .frame(minHeight: height)
+                .padding(.horizontal, horizontalPadding)
+                .frame(minWidth: heroWidth, minHeight: height)
                 .background(paper)
                 .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Button.hairline) }
         case .select:
@@ -154,6 +220,14 @@ private struct NidusButtonBody: View {
                 .foregroundStyle(isPressed ? Theme.Colour.accentPressed : colour)
                 .underline(isHovered)
                 .padding(.horizontal, Theme.Button.linkPadding)
+        case .plain:
+            // A row's own layout decides its width; only labels of capsules are kept on one line.
+            configuration.label
+                .background {
+                    shape.fill(
+                        Color.primary.opacity(
+                            isPressed ? Theme.Button.pressShade : isHovered ? Theme.Button.hoverShade : 0))
+                }
         }
     }
 
@@ -336,8 +410,8 @@ final class ClosureMenuItem: NSMenuItem {
 // MARK: - Fields
 
 extension View {
-    /// The kit's text field: paper, radius 8, a 3:1 boundary, moss border and ring when
-    /// focused, red when the last attempt failed.
+    /// The kit's text field: paper, radius 8, a 3:1 boundary, a moss border when focused
+    /// (and the ring after keyboard use), red when the last attempt failed.
     func nidusField(isFocused: Bool, isError: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Control.cornerRadius, style: .continuous)
         return textFieldStyle(.plain)
@@ -352,11 +426,11 @@ extension View {
                     lineWidth: Theme.Control.fieldBorder)
             }
             .overlay {
-                shape.inset(by: -Theme.Control.focusRing / 2)
+                shape.inset(by: -(Theme.Control.focusRingOffset + Theme.Control.focusRing / 2))
                     .stroke(
-                        isError ? Theme.Colour.errorFill : Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing
+                        isError ? Theme.Colour.error : Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing
                     )
-                    .opacity(isFocused || isError ? 1 : 0)
+                    .opacity(isError || (isFocused && FocusVisibility.shared.isVisible) ? 1 : 0)
                     .allowsHitTesting(false)
             }
             .animation(Theme.Motion.hover, value: isFocused)
@@ -399,5 +473,58 @@ enum CardKind {
         case .warn: Theme.Colour.warnTitle
         case .ok, .error: Theme.Colour.bodyText
         }
+    }
+}
+
+// MARK: - Progress capsule
+
+/// The primary capsule as the progress (Progress board): moss fills it left to right over
+/// moss at 22%, and the label reads "Installing… 62%" with rolling, monospaced digits. The
+/// label is drawn twice and clipped by the fill, body text over the unfilled part and
+/// white over the moss, so every glyph keeps its contrast wherever the edge passes.
+/// Reduce Motion: the fill and the digits jump to each value.
+struct ProgressCapsule: View {
+    /// Held under `Theme.Motion.progressCeiling` by the caller until done.
+    let fraction: Double
+    var size: NidusButtonStyle.Size = .regular
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let shape = Capsule()
+        let clamped = min(max(fraction, 0), 1)
+        let percent = Int((clamped * 100).rounded())
+        label(colour: Theme.Colour.bodyText, percent: percent)
+            .padding(.horizontal, Theme.Button.padding)
+            .frame(minWidth: size == .hero ? Theme.Button.heroWidth : nil, minHeight: height)
+            .background { shape.fill(Theme.Colour.accent.opacity(Theme.Motion.progressTrackOpacity)) }
+            .overlay(alignment: .leading) {
+                GeometryReader { geometry in
+                    let width = geometry.size.width * clamped
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Theme.Colour.accent).frame(width: width)
+                        label(colour: Theme.Colour.onAccent, percent: percent)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .mask(alignment: .leading) { Rectangle().frame(width: width) }
+                    }
+                }
+            }
+            .clipShape(shape)
+            .animation(reduceMotion ? nil : Theme.Motion.progress, value: clamped)
+            .accessibilityElement()
+            .accessibilityLabel("Installing")
+            .accessibilityValue("\(percent) percent")
+            .accessibilityAddTraits(.updatesFrequently)
+    }
+
+    private var height: CGFloat { size == .hero ? Theme.Button.heroHeight : Theme.Button.height }
+
+    private func label(colour: Color, percent: Int) -> some View {
+        Text("Installing\u{2026} \(percent)%")
+            .font(size == .hero ? Theme.Font.heroPrimaryButton : Theme.Font.primaryButton)
+            .monospacedDigit()
+            .contentTransition(reduceMotion ? .identity : .numericText(value: Double(percent)))
+            .animation(reduceMotion ? nil : Theme.Motion.numbers, value: percent)
+            .foregroundStyle(colour)
+            .singleLineLabel()
     }
 }

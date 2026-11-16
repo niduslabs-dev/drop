@@ -5,6 +5,28 @@ import SwiftUI
 /// (`.claude/canvas/project`) and the Nidus component kit (`Components.dc.html`). Views read
 /// every number from here; none adds its own.
 enum Theme {
+    /// The studio spacing scale (`docs/mac-app-design.md` 1.1). Every gap and inset is one of
+    /// these; anything off the scale says which optical fix it is where it's declared.
+    enum Space {
+        static let xxxs: CGFloat = 2
+        static let xxs: CGFloat = 4
+        static let xs: CGFloat = 6
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 24
+        static let xxl: CGFloat = 32
+    }
+
+    /// The studio radii (`docs/mac-app-design.md` 1.4): capsules for actions, `control` for
+    /// value controls, `card` for containers at window scale.
+    enum Radius {
+        static let control: CGFloat = 8
+        static let card: CGFloat = 14
+        /// The thin hairline every card and sheet list carries, with no shadow.
+        static let cardHairline: CGFloat = 0.5
+    }
+
     /// The install panel's content inset, the same on all four sides (every panel board).
     /// The centred window keeps it on the left, right and bottom; its top is the title bar.
     static let panelInset: CGFloat = 18
@@ -17,7 +39,7 @@ enum Theme {
         static let width: CGFloat = 400
         static let spacing: CGFloat = 16
         /// The Licence board packs its taller content a little closer.
-        static let licenceSpacing: CGFloat = 14
+        static let licenceSpacing: CGFloat = Space.m
         static let cornerRadius: CGFloat = 18
         /// The boards' card is the surface at 92% over the popover material.
         static let surfaceOpacity: Double = 0.92
@@ -64,6 +86,8 @@ enum Theme {
         static let placeholderGlyphScale: CGFloat = 0.9
         static let placeholderFillOpacity: Double = 0.5
         static let licenceGlyph: CGFloat = 26
+        /// Off the scale on purpose: the NotificationPanel row's icon-to-title gap (guide 3,
+        /// "row (gap 14)"), which optically balances the 60 pt tile against 17 pt text.
         static let titleSpacing: CGFloat = 14
         /// The green check on board 3's icon.
         static let badge: CGFloat = 24
@@ -85,6 +109,20 @@ enum Theme {
         static let calloutTitle = SwiftUI.Font.system(size: 13, weight: .semibold)
         static let button = SwiftUI.Font.system(size: 13, weight: .medium)
         static let primaryButton = SwiftUI.Font.system(size: 13, weight: .semibold)
+        /// The hero capsules (240 × 38) on the install window and onboarding: 14 pt, as on
+        /// the InstallWindow board.
+        static let heroButton = SwiftUI.Font.system(size: 14)
+        static let heroPrimaryButton = SwiftUI.Font.system(size: 14, weight: .semibold)
+        /// `windowTitle`: an app's name centred in the install window.
+        static let windowTitle = SwiftUI.Font.system(size: 22, weight: .semibold)
+        /// `pageTitle`: "Settings".
+        static let pageTitle = SwiftUI.Font.system(size: 20, weight: .semibold)
+        /// `sectionTitle`: sheet titles.
+        static let sectionTitle = SwiftUI.Font.system(size: 15, weight: .semibold)
+        /// `groupLabel`: the label above a Settings card.
+        static let groupLabel = SwiftUI.Font.system(size: 11, weight: .medium)
+        /// The disclosure chevron and the ⓘ glyph.
+        static let chevron = SwiftUI.Font.system(size: 11, weight: .semibold)
         static let link = SwiftUI.Font.system(size: 12)
         /// Title tracking: -0.01em of 17 pt.
         static let titleTracking: CGFloat = -0.17
@@ -92,10 +130,11 @@ enum Theme {
 
     /// The kit's info cards: neutral (ok), warn and error.
     enum Card {
-        static let verticalPadding: CGFloat = 11
-        static let horizontalPadding: CGFloat = 12
+        static let verticalPadding: CGFloat = Space.m
+        static let horizontalPadding: CGFloat = Space.m
+        /// The popup's 400 pt scale keeps a smaller radius than window cards (guide, InfoCard).
         static let cornerRadius: CGFloat = 10
-        static let rowSpacing: CGFloat = 7
+        static let rowSpacing: CGFloat = Space.s
         static let iconSpacing: CGFloat = 8
         static let calloutSpacing: CGFloat = 10
         static let calloutLineSpacing: CGFloat = 4
@@ -111,8 +150,11 @@ enum Theme {
 
     /// The kit's buttons: capsules for actions, radius 8 for value controls (select, field).
     enum Button {
+        /// The three heights: small 28, standard 30, hero 38 (guide, Controls).
         static let height: CGFloat = 30
         static let padding: CGFloat = 16
+        static let heroHeight: CGFloat = 38
+        static let heroWidth: CGFloat = 240
         /// Settings' Change… and Quit Drop.
         static let smallHeight: CGFloat = 28
         static let smallPadding: CGFloat = 14
@@ -128,7 +170,9 @@ enum Theme {
     /// The kit's value controls.
     enum Control {
         static let cornerRadius: CGFloat = 8
-        static let focusRing: CGFloat = 3
+        /// The focusVisible ring: solid moss, 2 pt, 2 pt outside the control's shape.
+        static let focusRing: CGFloat = 2
+        static let focusRingOffset: CGFloat = 2
         static let disabledOpacity: Double = 0.45
         static let selectLeading: CGFloat = 12
         static let selectTrailing: CGFloat = 10
@@ -145,7 +189,7 @@ enum Theme {
         static let knobShadowOpacity: Double = 0.25
         static let knobShadowRadius: CGFloat = 1
         static let knobShadowY: CGFloat = 1
-        static let switchLabelSpacing: CGFloat = 12
+        static let switchLabelSpacing: CGFloat = Space.l
         static let captionSpacing: CGFloat = 2
         static let fieldVerticalPadding: CGFloat = 7
         static let fieldHorizontalPadding: CGFloat = 11
@@ -174,32 +218,114 @@ enum Theme {
         static let spacing: CGFloat = 6
     }
 
+    /// The SettingsWindow primitive (SettingsV2 board).
     enum Settings {
-        static let width: CGFloat = 600
-        static let rowSpacing: CGFloat = 10
+        static let width: CGFloat = 560
+        /// Taller content scrolls inside the window.
+        static let maxHeight: CGFloat = 720
+        /// From the window's top edge to the page title, clear of the traffic lights.
+        static let titleTop: CGFloat = 40
+        static let titleToGroups: CGFloat = Space.xxl
+        static let groupSpacing: CGFloat = Space.l
+        static let labelToCard: CGFloat = Space.xs
+        static let labelInset: CGFloat = Space.xxs
+        /// Between a row's controls (the popup's Install to row, Recent rows).
+        static let rowSpacing: CGFloat = Space.s
+        /// The ⓘ popover's text width.
+        static let infoWidth: CGFloat = 260
+        /// The Recent sheet (Sheet primitive, list size).
+        static let sheetWidth: CGFloat = 560
+        static let sheetHeight: CGFloat = 480
+        /// Rows in the Recent sheet's list.
+        static let recentRowHeight: CGFloat = 44
+    }
+
+    /// The SettingsRow primitive: one setting, label left, control right.
+    enum Row {
+        static let horizontalPadding: CGFloat = Space.l
+        static let verticalPadding: CGFloat = Space.m
+        static let labelControlGap: CGFloat = Space.l
+        static let titleInfoGap: CGFloat = Space.xs
+        static let captionGap: CGFloat = Space.xxxs
+        static let dividerInset: CGFloat = Space.l
+        static let selectMinWidth: CGFloat = 144
+    }
+
+    /// The AppWindow primitive: the centred install window an opened image gets
+    /// (InstallWindow board).
+    enum InstallWindow {
+        static let width: CGFloat = 440
+        static let sideInset: CGFloat = Space.xxl
+        static let bottomInset: CGFloat = Space.xl
+        /// Below the title bar (read from the window) to the icon: the board's 4 pt.
+        static let titleBarGap: CGFloat = Space.xxs
+        static let icon: CGFloat = 96
+        /// The tile's corner, for the placeholder and demo tiles (Apple's 22.5% at 96).
+        static let iconCornerRadius: CGFloat = 22
+        static let iconGlyph: CGFloat = 44
+        static let iconToTitle: CGFloat = Space.l
+        static let titleToMeta: CGFloat = Space.xxs
+        static let metaToDetails: CGFloat = Space.xl
+        static let detailsToOptions: CGFloat = Space.l
+        static let optionsToActions: CGFloat = Space.xl
+        static let actionSpacing: CGFloat = Space.m
+        /// A details row's height: rows sit 24 apart.
+        static let detailRow: CGFloat = 24
+        static let detailIcon: CGFloat = 14
+        static let detailIconGap: CGFloat = Space.xs
+        /// The licence card's height; its text scrolls inside.
+        static let licenceHeight: CGFloat = 220
+        /// The tick badge on the tile's corner: 34 with a 3 pt surface border, 6 pt past it.
+        static let badge: CGFloat = 34
+        static let badgeBorder: CGFloat = 3
+        static let badgeOffset: CGFloat = 6
+        static let badgeStroke: CGFloat = 3
     }
 
     /// The onboarding window (boards Onboarding1 to Onboarding5).
     enum Onboarding {
         static let width: CGFloat = 600
-        static let height: CGFloat = 480
-        /// The boards' title bar band; never less than the real title bar, which is read.
-        static let titleBand: CGFloat = 44
-        static let artHeight: CGFloat = 190
+        /// 540, not the first boards' 480: two stacked 240 × 38 capsules need the room.
+        static let height: CGFloat = 540
+
+        /// The one fixed rhythm every page keeps, read from the bottom edge up (Onboarding1
+        /// to Onboarding5, Jatin 2026-11-16): dots, actions, the line under the body, body,
+        /// heading, then the art panel, which takes whatever height is left.
+        enum Rhythm {
+            /// The page dots' bottom edge above the window's.
+            static let dotsBottom: CGFloat = Space.xl
+            /// From the lowest capsule to the dots. Off the scale by Jatin's spec: 16
+            /// crowded the dots, 24 split them from the buttons.
+            static let actionsToDots: CGFloat = 20
+            /// Between the primary and the secondary capsule.
+            static let actionSpacing: CGFloat = Space.m
+            /// From the text's last line (info line, or body) to the primary capsule.
+            static let textToActions: CGFloat = Space.xl
+            /// From the body to the line under it (info, denied note or byline).
+            static let bodyToInfo: CGFloat = Space.m
+            static let headingToBody: CGFloat = Space.s
+            /// From the art panel's bottom edge to the heading.
+            static let artToHeading: CGFloat = Space.xxl
+
+            /// The art panel's height: the window less the title bar, the fixed gaps, the
+            /// text, the capsules and the dots. Pages with fewer elements get a taller panel.
+            static func artHeight(titleBar: CGFloat, textHeight: CGFloat, actions: Int) -> CGFloat {
+                let capsules = CGFloat(actions) * Button.heroHeight + CGFloat(max(actions - 1, 0)) * actionSpacing
+                let fixed = artToHeading + textToActions + actionsToDots + dot + dotsBottom
+                return height - titleBar - fixed - textHeight - capsules
+            }
+
+            /// The dots' top edge from the window's top: the same on every page.
+            static var dotsTop: CGFloat { height - dotsBottom - dot }
+        }
+
         static let artCornerRadius: CGFloat = 12
-        static let textTopPadding: CGFloat = 22
         static let textHorizontalPadding: CGFloat = 48
-        static let textSpacing: CGFloat = 8
         static let bodyMaxWidth: CGFloat = 420
         /// Line height 1.5 on 13 pt: 19.5 pt less the font's own 16 pt line (measured), split
         /// between lines and, halved, above and below the paragraph as CSS does.
         static let bodyLineSpacing: CGFloat = 3.5
-        /// The info line sits a little further below the body than the body below the title.
-        static let infoTopPadding: CGFloat = 6
         static let infoIconSpacing: CGFloat = 6
-        static let bylineTopPadding: CGFloat = 10
-        static let footerSpacing: CGFloat = 12
-        static let linkPadding: CGFloat = 6
         static let dot: CGFloat = 6
         static let activeDotWidth: CGFloat = 18
         static let dotSpacing: CGFloat = 6
@@ -222,7 +348,6 @@ enum Theme {
         /// Board 5's byline: Manrope 12, secondary text colour.
         static let bylineSize: CGFloat = 12
         static let infoIcon: CGFloat = 12
-        static let linkFont = SwiftUI.Font.system(size: 12)
 
         /// The drawings, in the boards' SVG units (1 unit = 1 pt).
         enum Art {
@@ -367,15 +492,16 @@ enum Theme {
         static let swapOffset: CGFloat = 5
         static var swap: Animation { .spring(response: 0.4, dampingFraction: 0.9) }
 
-        /// Staging steps on board 2 appear one at a time.
-        static let stepInterval: Duration = .milliseconds(550)
-        static let stepRise: CGFloat = 8
-        static var step: Animation { .easeOut(duration: 0.4) }
         /// The progress bar never passes this until the install is done.
         static let progressCeiling: Double = 0.9
         static var progress: Animation { .easeInOut(duration: 0.3) }
-        /// Board 2 stays up at least this long, so a fast install doesn't flash past.
+        /// The filling button stays up at least this long, so a fast install doesn't flash past.
         static let installingHold: Duration = .milliseconds(900)
+        /// Less work than this left at the click: no fill at all, straight to done (Progress
+        /// board, "Usual case").
+        static let skipProgressBelow: Duration = .milliseconds(400)
+        /// The progress capsule's unfilled part: moss at this opacity.
+        static let progressTrackOpacity: Double = 0.22
 
         /// The drawn Installed check.
         static var checkDraw: Animation { .easeInOut(duration: 0.6) }
@@ -468,9 +594,8 @@ extension NSColor {
     static let hairline = nidus(
         light: NSColor(hex: ink, alpha: 0.12), dark: NSColor(hex: paperHex, alpha: 0.12),
         contrast: .controlBoundary, darkContrast: .controlBoundary)
-    static let focusRing = nidus(
-        light: NSColor(hex: 0x4F7A4A, alpha: 0.35), dark: NSColor(hex: 0x8DBB82, alpha: 0.45),
-        contrast: NSColor(hex: 0x3B5D38), darkContrast: NSColor(hex: 0xA9D19F))
+    /// Solid moss, so the ring clears 3:1 on every surface (5:1 on white, 7.9:1 on ink).
+    static let focusRing = nidus(light: 0x4F7A4A, dark: 0x8DBB82, contrast: 0x3B5D38, darkContrast: 0xA9D19F)
     static let infoFill = nidus(
         light: NSColor(hex: ink, alpha: 0.04), dark: NSColor(hex: paperHex, alpha: 0.06),
         contrast: NSColor(hex: ink, alpha: 0.08), darkContrast: NSColor(hex: paperHex, alpha: 0.12))

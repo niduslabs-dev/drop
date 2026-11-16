@@ -32,8 +32,10 @@ public enum InstallState: Sendable, Equatable {
     /// Opening the image and reading its catalog. Usually under 0.1 s.
     case reading
     /// The image carries a licence agreement. Nothing is staged until `acceptLicence()`;
-    /// `decline()` ends the session.
-    case needsLicence(LicenceAgreement)
+    /// `decline()` ends the session. `preview` names the app and carries its icon when the
+    /// image could be read directly; nil on the hidden-mount path, which reads the licence
+    /// before anything is attached.
+    case needsLicence(LicenceAgreement, preview: AppPreview?)
     /// Staging and checking the app in the background. The summary already has the name,
     /// version, bundle ID, size and installed version; the signer fields fill in at `ready`.
     case preparing(AppSummary, InstallProgress)
@@ -69,6 +71,27 @@ public enum InstallState: Sendable, Equatable {
         case .reading, .needsLicence, .needsPassword, .preparing, .waitingToPrepare, .ready, .warning, .installing:
             false
         }
+    }
+}
+
+/// What the licence screen shows about the app before the user agrees: read from the
+/// image's catalog and the app's `Info.plist` and icon, which is reading, not installing.
+/// Staging still waits for `acceptLicence()`.
+public struct AppPreview: Sendable, Equatable {
+    /// `CFBundleDisplayName`, else `CFBundleName`, else the folder name without `.app`.
+    public var name: String
+    public var version: String?
+    /// Sum of the app's file sizes, from the catalog.
+    public var size: UInt64
+    /// The `.icns` named by `CFBundleIconFile`, as bytes (capped at `BundleInfo.maxIconSize`).
+    /// Nil for apps whose icon lives only in an asset catalog.
+    public var iconData: Data?
+
+    public init(name: String, version: String?, size: UInt64, iconData: Data?) {
+        self.name = name
+        self.version = version
+        self.size = size
+        self.iconData = iconData
     }
 }
 

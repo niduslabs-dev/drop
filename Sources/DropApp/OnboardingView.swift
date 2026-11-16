@@ -13,14 +13,18 @@ struct OnboardingView: View {
     let openPrivacySettings: () -> Void
     /// Esc: closes the window, which `OnboardingWindowController` reports as closed early.
     let close: () -> Void
-    /// The window's real title bar height, read from the window. The boards' band is taller,
-    /// so this only matters if a future macOS makes the title bar taller than the band.
+    /// The window's real title bar height, read from the window. The page runs to the top
+    /// edge (no title band); the art starts below the traffic lights' row.
     var titleBarHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// One fixed rhythm anchored to the bottom (`Theme.Onboarding.Rhythm`): dots, buttons,
+    /// text and heading sit at the same gaps on every page, and the art panel takes all the
+    /// height left between the title bar and the heading. A page with fewer elements gets a
+    /// taller drawing instead of a hole, and nothing else in the window flexes.
     var body: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: max(Theme.Onboarding.titleBand, titleBarHeight))
+            Color.clear.frame(height: titleBarHeight)
             ZStack {
                 page
                     .id(coordinator.page)
@@ -28,8 +32,12 @@ struct OnboardingView: View {
             }
             .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.page, value: coordinator.page)
             .frame(maxHeight: .infinity)
-            footer
-                .padding([.horizontal, .bottom], Theme.onboardingInset)
+            VStack(spacing: Theme.Onboarding.Rhythm.actionSpacing) { buttons }
+                .disabled(coordinator.isBusy)
+                .padding(.top, Theme.Onboarding.Rhythm.textToActions)
+            PageDots(page: coordinator.page)
+                .padding(.top, Theme.Onboarding.Rhythm.actionsToDots)
+                .padding(.bottom, Theme.Onboarding.Rhythm.dotsBottom)
         }
         .frame(width: Theme.Onboarding.width, height: Theme.Onboarding.height)
         .ignoresSafeArea()
@@ -45,11 +53,11 @@ struct OnboardingView: View {
             : .asymmetric(insertion: .opacity, removal: .blurFade(radius: Theme.Motion.pageBlur, offsetY: 0))
     }
 
+    /// The art panel, filling what the text leaves, then the text at its own height.
     private var page: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Theme.Onboarding.Rhythm.artToHeading) {
             OnboardingArt(page: coordinator.page)
-                .frame(maxWidth: .infinity)
-                .frame(height: Theme.Onboarding.artHeight)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
                     ArtBackground(), in: RoundedRectangle(cornerRadius: Theme.Onboarding.artCornerRadius)
                 )
@@ -57,47 +65,46 @@ struct OnboardingView: View {
                 .accessibilityHidden(true)
                 .staggeredBlurIn(0)
             text
-                .padding(.top, Theme.Onboarding.textTopPadding)
                 .padding(.horizontal, Theme.Onboarding.textHorizontalPadding)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity)
         }
     }
 
     // MARK: Text
 
+    /// Heading, 8, body, then 12 above the one line under it (the info line, the denied
+    /// note or the byline) when the page has one.
     private var text: some View {
-        VStack(spacing: Theme.Onboarding.textSpacing) {
+        VStack(spacing: Theme.Onboarding.Rhythm.headingToBody) {
             Text(content.title)
                 .font(Typeface.font(size: Theme.Onboarding.titleSize, weight: Theme.Onboarding.titleWeight))
                 .tracking(Theme.Onboarding.titleTracking)
                 .foregroundStyle(Theme.Colour.bodyText)
                 .accessibilityAddTraits(.isHeader)
                 .staggeredBlurIn(1)
-            Text(content.body)
-                .font(Theme.Font.body)
-                .lineSpacing(Theme.Onboarding.bodyLineSpacing)
-                .padding(.vertical, Theme.Onboarding.bodyLineSpacing / 2)
-                .foregroundStyle(Theme.Colour.bodyText)
-                .frame(maxWidth: Theme.Onboarding.bodyMaxWidth)
-                .staggeredBlurIn(2)
-            if coordinator.showsFolderDenied {
-                denied.staggeredBlurIn(3)
-            } else if let info = content.info {
-                Label {
-                    Text(info)
-                } icon: {
-                    Image(systemName: "info.circle").font(.system(size: Theme.Onboarding.infoIcon))
-                }
-                .labelStyle(InfoLabelStyle())
-                .padding(.top, Theme.Onboarding.infoTopPadding)
-                .staggeredBlurIn(3)
-            }
-            if coordinator.page == .done {
-                Text("A Nidus Labs app. A home for little ideas.")
-                    .font(Typeface.font(size: Theme.Onboarding.bylineSize, weight: .regular))
-                    .foregroundStyle(Theme.Colour.secondaryText)
-                    .padding(.top, Theme.Onboarding.bylineTopPadding)
+            VStack(spacing: Theme.Onboarding.Rhythm.bodyToInfo) {
+                Text(content.body)
+                    .font(Theme.Font.body)
+                    .lineSpacing(Theme.Onboarding.bodyLineSpacing)
+                    .foregroundStyle(Theme.Colour.bodyText)
+                    .frame(maxWidth: Theme.Onboarding.bodyMaxWidth)
+                    .staggeredBlurIn(2)
+                if coordinator.showsFolderDenied {
+                    denied.staggeredBlurIn(3)
+                } else if let info = content.info {
+                    Label {
+                        Text(info)
+                    } icon: {
+                        Image(systemName: "info.circle").font(.system(size: Theme.Onboarding.infoIcon))
+                    }
+                    .labelStyle(InfoLabelStyle())
                     .staggeredBlurIn(3)
+                } else if coordinator.page == .done {
+                    Text("A Nidus Labs app. A home for little ideas.")
+                        .font(Typeface.font(size: Theme.Onboarding.bylineSize, weight: .regular))
+                        .foregroundStyle(Theme.Colour.secondaryText)
+                        .staggeredBlurIn(3)
+                }
             }
         }
         .multilineTextAlignment(.center)
@@ -116,44 +123,36 @@ struct OnboardingView: View {
             Button("Open System Settings", action: openPrivacySettings)
                 .buttonStyle(.nidusLink(font: Theme.Onboarding.infoFont))
         }
-        .padding(.top, Theme.Onboarding.infoTopPadding)
     }
 
-    // MARK: Footer
+    // MARK: Buttons
 
-    private var footer: some View {
-        HStack(spacing: Theme.Onboarding.footerSpacing) {
-            PageDots(page: coordinator.page)
-            Spacer(minLength: 0)
-            HStack(spacing: Theme.Button.spacing) { buttons }
-                .disabled(coordinator.isBusy)
-        }
-    }
-
+    /// The primary capsule, then the secondary 12 below it when the page has one; both
+    /// 240 × 38, centred.
     @ViewBuilder private var buttons: some View {
         switch coordinator.page {
         case .welcome:
             primary("Get Started") { coordinator.getStarted() }
         case .downloads:
-            Button("Choose another folder") {
-                if let url = chooseFolder() { coordinator.useFolder(url) }
-            }
-            .buttonStyle(.nidusLink(font: Theme.Onboarding.linkFont))
-            .padding(.horizontal, Theme.Onboarding.linkPadding)
-            if coordinator.showsFolderDenied {
-                Button("Continue anyway") { coordinator.continueWithoutFolder() }
-                    .buttonStyle(.nidusSecondary)
-            }
             primary("Allow Downloads") {
                 let folder = folder()
                 Task { await coordinator.allowFolder(folder) }
             }
+            if coordinator.showsFolderDenied {
+                Button("Continue anyway") { coordinator.continueWithoutFolder() }
+                    .buttonStyle(.nidusHeroSecondary)
+            } else {
+                Button("Choose another folder") {
+                    if let url = chooseFolder() { coordinator.useFolder(url) }
+                }
+                .buttonStyle(.nidusHeroSecondary)
+            }
         case .diskImages:
-            Button("Not now") { coordinator.skipDefaultHandler() }.buttonStyle(.nidusSecondary)
             primary("Use Drop") { Task { await coordinator.useDrop() } }
+            Button("Not now") { coordinator.skipDefaultHandler() }.buttonStyle(.nidusHeroSecondary)
         case .loginItem:
-            Button("Not now") { coordinator.skipLoginItem() }.buttonStyle(.nidusSecondary)
             primary("Start at Login") { coordinator.startAtLogin() }
+            Button("Not now") { coordinator.skipLoginItem() }.buttonStyle(.nidusHeroSecondary)
         case .done:
             primary("Done") { coordinator.finish() }
         }
@@ -161,7 +160,7 @@ struct OnboardingView: View {
 
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
-            .buttonStyle(.nidusPrimary)
+            .buttonStyle(.nidusHeroPrimary)
             .keyboardShortcut(.defaultAction)
     }
 
@@ -589,10 +588,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
             self.window = window
             followRequests()
         }
-        NSApp.setActivationPolicy(.regular)
-        window?.level = coordinator.isBusy ? .normal : .floating
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        ActivationPolicy.opened(.onboarding)
+        guard let window else { return }
+        window.level = WindowPresence.level(coordinator.isBusy ? .normal : .floating)
+        WindowPresence.present(window)
     }
 
     /// Closes after Done; `windowWillClose` then sees onboarding complete and does nothing.
@@ -602,7 +601,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         window?.level = .normal
-        NSApp.setActivationPolicy(.accessory)
+        ActivationPolicy.closed(.onboarding)
         coordinator.windowClosed()
     }
 
@@ -614,7 +613,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, let window = self.window, window.isVisible else { return }
-                window.level = self.coordinator.isBusy ? .normal : .floating
+                window.level = WindowPresence.level(self.coordinator.isBusy ? .normal : .floating)
                 self.followRequests()
             }
         }

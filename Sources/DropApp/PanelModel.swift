@@ -65,7 +65,44 @@ final class PanelModel: Identifiable {
     let dmg: URL
     let origin: Origin
     var state: InstallState = .reading {
-        didSet { if let summary = state.summary { self.summary = summary } }
+        didSet {
+            if let summary = state.summary { self.summary = summary }
+            if case .needsLicence(_, let preview?) = state { self.preview = preview }
+            if case .installed = state, installDuration == nil, let installStartedAt {
+                installDuration = ContinuousClock.now - installStartedAt
+            }
+        }
+    }
+    /// What the image said about the app before the licence was agreed to.
+    private(set) var preview: AppPreview?
+    /// When Install was clicked, and how long it took until installed, for the install
+    /// window's "Installed in Applications · 1.2 s".
+    var installStartedAt: ContinuousClock.Instant?
+    var installDuration: Duration?
+    /// Install was clicked with so little work left (`Theme.Motion.skipProgressBelow`) that
+    /// the button goes straight to done instead of showing a fill that would only flash.
+    var skipsProgress = false
+    /// The first staging progress seen and when, to estimate how long the rest will take.
+    @ObservationIgnored private var firstProgress: (at: ContinuousClock.Instant, bytes: UInt64)?
+
+    /// Notes staging progress for `estimatedRemaining`.
+    func noteProgress() {
+        guard let progress, firstProgress == nil else { return }
+        firstProgress = (.now, progress.bytesDone)
+    }
+
+    /// How long the rest of staging should take, from the rate seen so far: the background
+    /// rate, which Install only raises, so the estimate errs towards showing progress. Nil
+    /// before there's a rate to go on. Zero once staged and checked.
+    var estimatedRemaining: Duration? {
+        switch state {
+        case .ready, .warning: return .zero
+        default: break
+        }
+        guard let progress, let firstProgress, progress.bytesDone > firstProgress.bytes else { return nil }
+        let elapsed = ContinuousClock.now - firstProgress.at
+        let rate = Double(progress.bytesDone - firstProgress.bytes) / max(elapsed.seconds, .leastNonzeroMagnitude)
+        return .seconds(Double(progress.bytesTotal - progress.bytesDone) / rate)
     }
     /// The latest summary seen, kept across states that carry none (installed, failed).
     private(set) var summary: AppSummary?
@@ -120,27 +157,10 @@ final class PanelModel: Identifiable {
         }
     }
 
-    /// The app's name for copy, falling back to a guess from the file name before the
-    /// image is read (the Licence and Password boards come first).
-    var appName: String { summary?.name ?? Self.guessName(fromImage: dmg) }
-
-    /// "Linea-2.4.1.dmg" → "Linea": the name up to the first separator before a digit.
-    static func guessName(fromImage url: URL) -> String {
-        let base = url.deletingPathExtension().lastPathComponent
-        let separators: Set<Character> = ["-", "_", " ", "."]
-        var cut = base.endIndex
-        var index = base.startIndex
-        while index < base.endIndex {
-            let next = base.index(after: index)
-            if separators.contains(base[index]), next < base.endIndex, base[next].isNumber {
-                cut = index
-                break
-            }
-            index = next
-        }
-        let name = String(base[..<cut]).trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? base : name
-    }
+    /// The app's name for copy: from the app itself once read (or from the licence
+    /// screen's preview), else a cleaned guess from the file name, for images Drop can only
+    /// read by mounting (locked, mount-only) whose licence and password come first.
+    var appName: String { summary?.name ?? preview?.name ?? ImageName.appName(fromImage: dmg) }
 
     /// True while staging and the check still run: the signer line isn't known yet.
     var isChecking: Bool {
@@ -161,6 +181,7 @@ final class PanelModel: Identifiable {
         if let iconOverride { return iconOverride }
         if let installedApp { return .image(NSWorkspace.shared.icon(forFile: installedApp.path)) }
         if let file = summary?.iconFile, let image = NSImage(contentsOf: file) { return .image(image) }
+        if let data = preview?.iconData, let image = NSImage(data: data) { return .image(image) }
         switch board {
         case .fallback: return .placeholder(symbol: "externaldrive")
         case .password: return .placeholder(symbol: "lock")
@@ -207,4 +228,9 @@ enum Format {
 
 extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
+}
+
+extension Duration {
+    /// The duration in seconds, as a `Double`.
+    var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
 }

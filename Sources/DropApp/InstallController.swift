@@ -97,7 +97,7 @@ final class InstallController {
             await session.start()
             for await state in session.updates {
                 guard let self, self.session === session else { return }
-                if case .installed = state, let shown = self.installingShownAt {
+                if case .installed = state, let shown = self.installingShownAt, !model.skipsProgress {
                     let remaining = Theme.Motion.installingHold - (ContinuousClock.now - shown)
                     if remaining > .zero { try? await Task.sleep(for: remaining) }
                     guard self.session === session else { return }
@@ -108,11 +108,12 @@ final class InstallController {
     }
 
     private func apply(_ state: InstallState, to model: PanelModel, session: InstallSession) {
-        if case .needsLicence(let licence) = state, !(model.state.isLicence) {
+        if case .needsLicence(let licence, _) = state, !(model.state.isLicence) {
             model.licenceLanguage = LicenceText.initialLanguage(licence)
         }
         let hadSummary = model.summary != nil
         model.state = state
+        model.noteProgress()
         if !hadSummary, model.summary != nil {
             Log.panel.info("summary shown \(model.dmg.lastPathComponent, privacy: .public)")
         }
@@ -162,6 +163,10 @@ final class InstallController {
         guard model === current else { return }
         switch action {
         case .install, .installAnyway:
+            if model.installStartedAt == nil { model.installStartedAt = .now }
+            if let remaining = model.estimatedRemaining, remaining < Theme.Motion.skipProgressBelow {
+                model.skipsProgress = true
+            }
             if case .reading = model.state {
                 model.installWhenReady = true
             } else {
@@ -182,6 +187,7 @@ final class InstallController {
             finish(model)
         case .undoTrash: undoTrash(model)
         case .agreeLicence:
+            if model.installStartedAt == nil { model.installStartedAt = .now }
             model.licenceAccepted = true
             model.installWhenReady = true
             Task { await session?.acceptLicence() }
@@ -246,7 +252,8 @@ final class InstallController {
                     Log.app.error("Couldn't trash the disk image: \(error, privacy: .public)")
                 }
             }
-            scheduleAutoClose(model)
+            // The popup closes by itself after a while; the window the user opened never does.
+            if case .watched = model.origin { scheduleAutoClose(model) }
         }
     }
 
@@ -378,14 +385,14 @@ final class InstallController {
     // MARK: Licence PDF
 
     private func saveLicence(_ model: PanelModel) {
-        guard case .needsLicence(let licence) = model.state,
+        guard case .needsLicence(let licence, _) = model.state,
             licence.languages.indices.contains(model.licenceLanguage)
         else { return }
         let text = LicenceText.attributed(licence.languages[model.licenceLanguage])
         let save = NSSavePanel()
         save.allowedContentTypes = [.pdf]
         save.nameFieldStringValue = "\(model.appName) Licence.pdf"
-        NSApp.activate()
+        WindowPresence.activate()
         save.begin { response in
             guard response == .OK, let url = save.url else { return }
             MainActor.assumeIsolated {

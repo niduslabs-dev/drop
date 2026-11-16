@@ -49,14 +49,37 @@ struct BundleInfo: Sendable, Equatable {
         return BundleInfo(plist: Array(data))
     }
 
+    /// The largest icon read out of an image for the licence screen. Real `.icns` files are
+    /// up to a few MB; the cap keeps a hostile image from making Drop hold more.
+    static let maxIconSize: UInt64 = 8 << 20
+
+    /// The candidate file names for `CFBundleIconFile`, with and without `.icns`. Nil when
+    /// the name could reach outside `Contents/Resources`.
+    private var iconNames: [String]? {
+        guard let iconFile, !iconFile.contains("/"), iconFile != "..", iconFile != "." else { return nil }
+        return iconFile.hasSuffix("." + Self.iconExtension)
+            ? [iconFile] : [iconFile + "." + Self.iconExtension, iconFile]
+    }
+
+    /// Reads the app's icon bytes through the image's filesystem, for the licence screen
+    /// (nothing is staged yet). Nil when there is no regular icon file within the cap.
+    func iconData(app: Entry, in fileSystem: any FileSystem) -> Data? {
+        for name in iconNames ?? [] {
+            guard let entry = try? fileSystem.lookup([app.name, "Contents", "Resources", name]),
+                entry.kind == .file, entry.size <= Self.maxIconSize,
+                let bytes = try? fileSystem.contents(of: entry)
+            else { continue }
+            return Data(bytes)
+        }
+        return nil
+    }
+
     /// The icon file inside a staged app, when `CFBundleIconFile` names a regular file in
     /// `Contents/Resources` (with or without its `.icns` extension). A name with a path
     /// separator is ignored, so the panel never loads a file outside the bundle.
     func iconURL(inStagedApp app: URL) -> URL? {
-        guard let iconFile, !iconFile.contains("/"), iconFile != "..", iconFile != "." else { return nil }
+        guard let names = iconNames else { return nil }
         let resources = app.appending(path: "Contents/Resources", directoryHint: .isDirectory)
-        let names =
-            iconFile.hasSuffix("." + Self.iconExtension) ? [iconFile] : [iconFile + "." + Self.iconExtension, iconFile]
         for name in names {
             let url = resources.appending(path: name, directoryHint: .notDirectory)
             var info = stat()

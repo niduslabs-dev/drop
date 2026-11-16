@@ -12,7 +12,11 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Posted by a second copy of Drop that was started while this one runs.
-    static let showSettingsNotification = Notification.Name("dev.niduslabs.drop.showSettings")
+    /// "Show Settings", from a second launch to the running copy. Named after the bundle
+    /// ID, so a debug copy (`dev.niduslabs.drop.debug`) and a release copy never hear each
+    /// other: the release name stays `dev.niduslabs.drop.showSettings`.
+    static let showSettingsNotification = Notification.Name(
+        (Bundle.main.bundleIdentifier ?? "dev.niduslabs.drop") + ".showSettings")
 
     let launch: LaunchOptions
     let preferences: Preferences
@@ -55,6 +59,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingOpens: [URL] = []
     private var isLaunched = false
 
+    /// In a background test, Open Documents events come to `handleOpenDocuments` instead of
+    /// AppKit's own handler, which activates the app (measured: Drop became the active app
+    /// within 0.15 s of an `odoc` sent straight to its PID) and so would take focus.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard launch.isBackgroundTest else { return }
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleOpenDocuments(_:reply:)),
+            forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEOpenDocuments))
+    }
+
+    /// The background test's Open Documents: the event's file URLs, into `application(_:open:)`.
+    @objc private func handleOpenDocuments(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        guard let list = event.paramDescriptor(forKeyword: keyDirectObject) else { return }
+        let urls = (0..<list.numberOfItems).compactMap { list.atIndex($0 + 1)?.fileURLValue }
+        application(NSApp, open: urls)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
             if let appearance = launch.appearance {
@@ -62,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         #endif
         Typeface.registerBundledFonts()
+        FocusVisibility.shared.start()
         panel = PanelWindowController()
         controller = InstallController(preferences: preferences, store: store, launch: launch, panel: panel)
         settings = SettingsWindowController { [weak self] in
@@ -76,10 +98,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } onShow: { [weak self] in
             self?.preferences.opensDiskImages = DiskImageHandler.isDropDefault
         }
-        DistributedNotificationCenter.default().addObserver(
-            forName: Self.showSettingsNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.showSettingsOrOnboarding() }
+        // A background test copy never answers another launch: a release test build shares
+        // the release name, and a launch of the user's own copy must not open a window here.
+        if !launch.isBackgroundTest {
+            DistributedNotificationCenter.default().addObserver(
+                forName: Self.showSettingsNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.showSettingsOrOnboarding() }
+            }
         }
 
         isLaunched = true
@@ -169,10 +195,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return open.url
     }
 
-    /// Opening Drop again shows onboarding while it's open, else Settings.
+    /// Opening Drop again, or clicking its Dock icon, brings forward the window that's
+    /// open (onboarding first, then the install window, then Settings), else opens Settings.
     private func showSettingsOrOnboarding() {
         if let onboardingWindow, onboardingWindow.isVisible {
             onboardingWindow.show()
+        } else if panel.isWindowVisible, !settings.isVisible {
+            panel.bringWindowForward()
         } else {
             settings.show()
         }

@@ -10,6 +10,12 @@ cd "$(dirname "$0")/.."
 
 CONFIG=release
 [ "${1:-}" = "--debug" ] && CONFIG=debug
+# Debug builds are a separate app to macOS (own bundle ID, name and preferences), so a
+# debug or demo copy never meets a release copy, such as a trial install, in the
+# single-instance check or in Launch Services.
+BUNDLE_ID=dev.niduslabs.drop
+DISPLAY_NAME=Drop
+if [ "$CONFIG" = debug ]; then BUNDLE_ID=dev.niduslabs.drop.debug; DISPLAY_NAME="Drop (Debug)"; fi
 
 VERSION=0.1.0
 BUILD_NUMBER=1
@@ -30,9 +36,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleExecutable</key><string>Drop</string>
-    <key>CFBundleIdentifier</key><string>dev.niduslabs.drop</string>
-    <key>CFBundleName</key><string>Drop</string>
-    <key>CFBundleDisplayName</key><string>Drop</string>
+    <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+    <key>CFBundleName</key><string>$DISPLAY_NAME</string>
+    <key>CFBundleDisplayName</key><string>$DISPLAY_NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>

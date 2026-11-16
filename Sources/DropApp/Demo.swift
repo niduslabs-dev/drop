@@ -12,8 +12,10 @@
     ///
     /// States: reading, main, preparing, waiting, installing, done, update, update-running,
     /// warning, unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
-    /// password-wrong, settings, done-long (a 30-character app name), window (board 1 in the
-    /// centred window an opened image gets), and onboarding
+    /// password-wrong, settings, settings-recent (its Recent sheet open), done-long (a
+    /// 30-character app name), window (the install window an opened image gets) and its
+    /// states window-licence, window-licence-one, window-installing, window-done,
+    /// window-warning, window-refused and window-update, and onboarding
     /// pages onboarding-1 to onboarding-5 and onboarding-2-denied (fakes, so no request
     /// reaches macOS; closing the window quits).
     @MainActor
@@ -21,7 +23,11 @@
         static let states = [
             "reading", "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning",
             "unsigned", "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
-            "settings", "done-long", "window", "onboarding-1", "onboarding-2", "onboarding-2-denied", "onboarding-3",
+            "progress-30", "progress-62", "settings", "settings-recent", "done-long", "window", "window-licence",
+            "window-licence-one",
+            "window-installing", "window-progress-30", "window-progress-62", "window-done", "window-warning",
+            "window-refused", "window-update", "onboarding-1",
+            "onboarding-2", "onboarding-2-denied", "onboarding-3",
             "onboarding-4", "onboarding-5",
         ]
 
@@ -40,7 +46,7 @@
                 runOnboarding(state, app: app)
                 return
             }
-            if state == "settings" {
+            if state.hasPrefix("settings") {
                 for (name, version, age) in [("Fieldnote", "5.0", 86_400.0), ("Linea", "2.4.1", 120.0)] {
                     app.store.addRecent(
                         RecentInstall(
@@ -48,6 +54,14 @@
                             date: .now.addingTimeInterval(-age)))
                 }
                 app.settings.show()
+                if state == "settings-recent" {
+                    Task {
+                        app.settings.presentRecent()
+                        try? await Task.sleep(for: settle)
+                        report(app.settings.windowNumber ?? 0)
+                    }
+                    return
+                }
                 report(app.settings.windowNumber ?? 0)
                 return
             }
@@ -99,7 +113,9 @@
             fflush(stdout)
         }
 
-        static func makeModel(_ state: String) -> PanelModel {
+        static func makeModel(_ requested: String) -> PanelModel {
+            let opened = requested.hasPrefix("window")
+            let state = opened ? String(requested.dropFirst("window-".count)) : requested
             let image: String
             switch state {
             case "warning", "unsigned": image = "Tinkerpad-0.9.dmg"
@@ -109,7 +125,7 @@
             }
             let model = PanelModel(
                 dmg: URL(filePath: "/Users/Shared/Downloads/\(image)"),
-                origin: state == "window" ? .opened : .watched(folderName: "Downloads"), location: .applications,
+                origin: opened ? .opened : .watched(folderName: "Downloads"), location: .applications,
                 trashImage: true)
             model.iconOverride = .tile(lineaBlue, symbol: "line.diagonal")
             var linea = linea
@@ -125,6 +141,10 @@
                 model.state = .waitingToPrepare(linea)
             case "installing":
                 model.state = .installing(linea, InstallProgress(bytesDone: 44 * megabyte, bytesTotal: 84 * megabyte))
+            case "progress-30", "progress-62":
+                let percent: UInt64 = state == "progress-30" ? 30 : 62
+                model.state = .installing(
+                    linea, InstallProgress(bytesDone: 84 * megabyte * percent / 100, bytesTotal: 84 * megabyte))
             case "done-long":
                 linea = AppSummary(
                     bundleName: "Extraordinarily Long App Name.app", name: "Extraordinarily Long App Name",
@@ -136,6 +156,7 @@
                 model.state = .ready(linea)
                 model.state = .installed(URL(filePath: "/Applications/Linea.app"))
                 model.trashedImage = URL(filePath: "/Users/Shared/.Trash/\(image)")
+                model.installDuration = .milliseconds(1200)
             case "update", "update-running":
                 linea.update = .init(installedVersion: "2.3.0", developer: .same(teamID: "ABCDE12345"))
                 model.state = .ready(linea)
@@ -160,7 +181,9 @@
                 model.iconOverride = nil
                 model.state = .cannotInstall(.wontAttach("hdiutil: attach failed"))
             case "licence", "licence-one":
-                model.state = .needsLicence(licence(several: state == "licence"))
+                model.state = .needsLicence(
+                    licence(several: state == "licence"),
+                    preview: AppPreview(name: "Linea", version: "2.4.1", size: 84 * megabyte, iconData: nil))
             case "password", "password-wrong":
                 model.iconOverride = nil
                 model.password = "hunter22"

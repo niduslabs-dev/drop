@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// The Settings board, as a grouped form so it reads like System Settings, with the kit's
-/// switches, select and buttons. Pausing is the Ask switch; Quit Drop sits at the bottom,
-/// since Drop has no menu bar menu.
+/// The SettingsWindow primitive (SettingsV2 board): a "Settings" page title inside the
+/// content, then groups of SettingsRows in r14 cards. One setting per row, one caption
+/// line at most, longer text behind an ⓘ, lists in a sheet, no footer notes. Pausing is
+/// the Ask switch; Quit Drop is in the last group, since Drop has no menu bar menu.
 struct SettingsView: View {
     @Bindable var preferences: Preferences
     let recent: [RecentInstall]
@@ -11,105 +12,124 @@ struct SettingsView: View {
     let setOpenAtLogin: (Bool) -> Void
     let setOpensDiskImages: (Bool) -> Void
     let quit: () -> Void
+    /// The app's version, for the last group.
+    var version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+
+    @State private var showsRecent = false
+    @Environment(\.settingsOpensRecent) private var opensRecent
+    @State private var showsSkipInfo = false
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(isOn: $preferences.askOnNewImage) {
-                    Text("Ask when a new disk image arrives")
-                    caption("Turn off to pause watching.")
+        ScrollView {
+            page.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollIndicators(.automatic)
+        .frame(width: Theme.Settings.width, height: min(max(contentHeight, 1), Theme.Settings.maxHeight))
+        .ignoresSafeArea()
+        .background(SurfaceBackground(kind: .settings).ignoresSafeArea())
+        .foregroundStyle(Theme.Colour.bodyText)
+        .sheet(isPresented: $showsRecent) { RecentSheet(recent: recent) { showsRecent = false } }
+        .onChange(of: opensRecent, initial: true) { if opensRecent { showsRecent = true } }
+    }
+
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Settings")
+                .font(Theme.Font.pageTitle)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.bottom, Theme.Settings.titleToGroups)
+            VStack(alignment: .leading, spacing: Theme.Settings.groupSpacing) {
+                group("Watching") {
+                    SwitchRow(
+                        title: "Ask when a new disk image arrives", caption: "Turn off to pause watching.",
+                        isOn: $preferences.askOnNewImage)
+                    DisclosureRow(
+                        title: "Folder", value: FileManager.default.displayName(atPath: preferences.watchedFolder.path),
+                        action: changeFolder)
                 }
-                HStack(spacing: Theme.Settings.rowSpacing) {
-                    Text("Folder")
-                    Spacer(minLength: 0)
-                    HStack(spacing: Theme.Settings.rowSpacing) {
-                        Label {
-                            Text(FileManager.default.displayName(atPath: preferences.watchedFolder.path))
-                        } icon: {
-                            Image(systemName: "folder").foregroundStyle(Theme.Colour.folder)
-                        }
-                        .foregroundStyle(Theme.Colour.bodyText)
-                        Button("Change\u{2026}", action: changeFolder).buttonStyle(.nidusSmall)
+                group("Installing") {
+                    SettingsRow("Install apps to") {
+                        NidusSelect(
+                            label: "Install apps to", selection: preferences.installLocation,
+                            options: InstallLocation.allCases, title: \.title
+                        ) { preferences.installLocation = $0 }
+                        .frame(minWidth: Theme.Row.selectMinWidth, alignment: .trailing)
                     }
+                    SwitchRow(title: "Move the disk image to the Trash", isOn: $preferences.trashImage)
+                    SwitchRow(title: "Open the app when it's installed", isOn: $preferences.openAfterInstall)
+                    skipPromptRow
                 }
-            } header: {
-                header("Watching")
-            }
-            Section {
-                HStack(spacing: Theme.Settings.rowSpacing) {
-                    Text("Install apps to")
-                    Spacer(minLength: 0)
-                    NidusSelect(
-                        label: "Install apps to", selection: preferences.installLocation,
-                        options: InstallLocation.allCases, title: \.title
-                    ) { preferences.installLocation = $0 }
+                group("General") {
+                    SwitchRow(title: "Open Drop at login", isOn: loginBinding)
+                    SwitchRow(
+                        title: "Open disk images with Drop", caption: "Double-click a .dmg to get the install window.",
+                        isOn: handlerBinding)
                 }
-                Toggle("Move the disk image to the Trash", isOn: $preferences.trashImage)
-                Toggle("Open the app when it's installed", isOn: $preferences.openAfterInstall)
-                Toggle(isOn: $preferences.skipFirstOpenPrompt) {
-                    Text("Skip the \u{201C}downloaded from the Internet\u{201D} prompt")
-                    caption("Only for apps notarized by Apple.")
+                group("Recent") {
+                    DisclosureRow(title: "Recent installs", value: "\(recent.count)") { showsRecent = true }
                 }
-            } header: {
-                header("Installing")
-            }
-            Section {
-                Toggle("Open Drop at login", isOn: loginBinding)
-                Toggle(isOn: handlerBinding) {
-                    Text("Open disk images with Drop")
-                    caption("Double-click a .dmg to get the install panel.")
-                }
-            } header: {
-                header("General")
-            } footer: {
-                caption("Drop checks the signature before it installs.")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Section {
-                if recent.isEmpty {
-                    Text("Apps Drop installs show here.").foregroundStyle(Theme.Colour.secondaryText)
-                }
-                ForEach(recent) { install in
-                    HStack(spacing: Theme.Settings.rowSpacing) {
-                        Image(nsImage: NSWorkspace.shared.icon(forFile: install.path))
-                            .resizable()
-                            .frame(width: Theme.Icon.recentSize, height: Theme.Icon.recentSize)
-                        Text(install.title)
-                        Spacer()
-                        Text(Format.relative(install.date)).font(Theme.Font.small)
-                            .foregroundStyle(Theme.Colour.secondaryText)
-                        Button("Show") {
-                            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: install.path)])
-                        }
-                        .buttonStyle(.nidusLink())
+                group("Drop") {
+                    SettingsRow(version.isEmpty ? "Drop" : "Version \(version)") {
+                        Button("Quit Drop", action: quit).buttonStyle(.nidusSmall)
                     }
-                }
-            } header: {
-                header("Recent")
-            } footer: {
-                HStack {
-                    Spacer()
-                    Button("Quit Drop", action: quit).buttonStyle(.nidusSmall)
                 }
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .background(SurfaceBackground(kind: .settings).ignoresSafeArea())
-        .toggleStyle(.nidusSwitch)
-        .foregroundStyle(Theme.Colour.bodyText)
-        .frame(width: Theme.Settings.width)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, Theme.Settings.titleTop)
+        .padding([.horizontal, .bottom], Theme.Space.xl)
+        .frame(width: Theme.Settings.width, alignment: .leading)
     }
 
-    /// Section headers in the kit's secondary text, which clears 4.5:1 where the system's
-    /// header grey doesn't at this size.
-    private func header(_ title: String) -> some View {
-        Text(title).font(Theme.Font.captionStrong).foregroundStyle(Theme.Colour.secondaryText)
+    /// The skip-prompt switch with its ⓘ: the caption says the limit, the popover says
+    /// what it does.
+    private var skipPromptRow: some View {
+        HStack(spacing: Theme.Row.labelControlGap) {
+            VStack(alignment: .leading, spacing: Theme.Row.captionGap) {
+                HStack(spacing: Theme.Row.titleInfoGap) {
+                    Text("Skip the \u{201C}downloaded from the Internet\u{201D} prompt").font(Theme.Font.body)
+                    Button {
+                        showsSkipInfo.toggle()
+                    } label: {
+                        Image(systemName: "info.circle").font(Theme.Font.chevron)
+                            .foregroundStyle(Theme.Colour.secondaryText)
+                    }
+                    .buttonStyle(.nidusPlain)
+                    .accessibilityLabel("More info")
+                    .popover(isPresented: $showsSkipInfo, arrowEdge: .bottom) {
+                        Text(
+                            "Drop marks the app approved, as clicking Open does. Only for notarized apps that pass Drop's check, never for Install Anyway. macOS still checks the signature at first launch."
+                        )
+                        .font(Theme.Font.small)
+                        .frame(width: Theme.Settings.infoWidth, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(Theme.Space.l)
+                    }
+                }
+                Text("Only for apps notarized by Apple.").font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Colour.secondaryText).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            // The label is the text on the left, so the ⓘ stays its own button; the switch
+            // carries the name for VoiceOver.
+            Toggle(isOn: $preferences.skipFirstOpenPrompt) { EmptyView() }
+                .toggleStyle(.nidusSwitch)
+                .fixedSize()
+                .accessibilityLabel("Skip the downloaded from the Internet prompt")
+        }
+        .padding(.horizontal, Theme.Row.horizontalPadding)
+        .padding(.vertical, Theme.Row.verticalPadding)
     }
 
-    private func caption(_ text: String) -> some View {
-        Text(text).font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText)
+    /// A group label (11 medium, inset 4) 6 above its card.
+    private func group<Content: View>(_ label: String, @ViewBuilder rows: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Settings.labelToCard) {
+            Text(label).font(Theme.Font.groupLabel).foregroundStyle(Theme.Colour.secondaryText)
+                .padding(.leading, Theme.Settings.labelInset)
+                .accessibilityAddTraits(.isHeader)
+            RowCard(content: rows)
+        }
     }
 
     private var handlerBinding: Binding<Bool> {
@@ -126,9 +146,100 @@ struct SettingsView: View {
     }
 }
 
-/// The Settings window. Showing it is the one time Drop activates itself.
+extension EnvironmentValues {
+    /// Opens the Recent sheet as Settings appears (the demo's settings-recent state).
+    @Entry var settingsOpensRecent = false
+}
+
+/// A row that opens something (a sheet, a picker): title left, value and chevron right,
+/// and the whole row is the button.
+struct DisclosureRow: View {
+    let title: String
+    let value: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Row.labelControlGap) {
+                Text(title).font(Theme.Font.body).foregroundStyle(Theme.Colour.bodyText)
+                Spacer(minLength: 0)
+                HStack(spacing: Theme.Row.titleInfoGap) {
+                    Text(value).font(Theme.Font.body).lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "chevron.right").font(Theme.Font.chevron)
+                }
+                .foregroundStyle(Theme.Colour.secondaryText)
+            }
+            .padding(.horizontal, Theme.Row.horizontalPadding)
+            .padding(.vertical, Theme.Row.verticalPadding)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.nidusPlain)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+    }
+}
+
+/// The Recent sheet (Sheet primitive, 560 × 480): the apps Drop installed, newest first,
+/// each with Show; Done closes it (Return or Esc).
+struct RecentSheet: View {
+    let recent: [RecentInstall]
+    let done: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Recent installs").font(Theme.Font.sectionTitle).accessibilityAddTraits(.isHeader)
+            Text("Apps Drop installed, newest first.").font(Theme.Font.body)
+                .foregroundStyle(Theme.Colour.secondaryText)
+                .padding(.top, Theme.Space.s)
+            ScrollView {
+                RowCard {
+                    if recent.isEmpty {
+                        Text("Nothing installed yet.").font(Theme.Font.body)
+                            .foregroundStyle(Theme.Colour.secondaryText)
+                            .frame(maxWidth: .infinity, minHeight: Theme.Settings.recentRowHeight, alignment: .leading)
+                            .padding(.horizontal, Theme.Row.horizontalPadding)
+                    }
+                    ForEach(recent) { install in
+                        HStack(spacing: Theme.Settings.rowSpacing) {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: install.path))
+                                .resizable()
+                                .frame(width: Theme.Icon.recentSize, height: Theme.Icon.recentSize)
+                                .accessibilityHidden(true)
+                            Text(install.title).font(Theme.Font.body).lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 0)
+                            Text(Format.relative(install.date)).font(Theme.Font.small)
+                                .foregroundStyle(Theme.Colour.secondaryText)
+                            Button("Show") {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: install.path)])
+                            }
+                            .buttonStyle(.nidusLink())
+                        }
+                        .frame(minHeight: Theme.Settings.recentRowHeight)
+                        .padding(.horizontal, Theme.Row.horizontalPadding)
+                    }
+                }
+            }
+            .padding(.top, Theme.Space.l)
+            HStack {
+                Spacer()
+                Button("Done", action: done).buttonStyle(.nidusPrimary)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, Theme.Space.l)
+        }
+        .padding(Theme.Space.xl)
+        .frame(width: Theme.Settings.sheetWidth, height: Theme.Settings.sheetHeight)
+        .foregroundStyle(Theme.Colour.bodyText)
+        .background(SurfaceBackground(kind: .settings))
+        .onExitCommand(perform: done)
+    }
+}
+
+/// The Settings window. While it's open Drop has a Dock icon and is in Command-Tab
+/// (`ActivationPolicy`).
 @MainActor
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let makeView: () -> AnyView
     /// Runs before each show, to refresh values that live outside Drop.
@@ -139,6 +250,10 @@ final class SettingsWindowController {
         self.onShow = onShow
     }
 
+    var isVisible: Bool { window?.isVisible ?? false }
+
+    func windowWillClose(_ notification: Notification) { ActivationPolicy.closed(.settings) }
+
     var windowNumber: Int? { window?.windowNumber }
 
     func show() {
@@ -147,16 +262,40 @@ final class SettingsWindowController {
             let controller = NSHostingController(rootView: makeView())
             controller.sizingOptions = [.preferredContentSize]
             let window = NSWindow(contentViewController: controller)
-            window.title = "Drop"
-            window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            window.title = "Settings"
+            window.titleVisibility = .hidden
+            window.styleMask = [.titled, .closable, .fullSizeContentView]
             window.paintsSurfaceUnderTitleBar()
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
-            window.center()
+            window.delegate = self
             self.window = window
         } else if let controller = window?.contentViewController as? NSHostingController<AnyView> {
             controller.rootView = makeView()
         }
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        guard let window else { return }
+        window.layoutIfNeeded()
+        Self.centre(window)
+        ActivationPolicy.opened(.settings)
+        WindowPresence.present(window)
+    }
+
+    /// Shows the Recent sheet, for screenshots of it.
+    func presentRecent() {
+        guard let controller = window?.contentViewController as? NSHostingController<AnyView> else { return }
+        controller.rootView = AnyView(makeView().environment(\.settingsOpensRecent, true))
+    }
+
+    /// Centres `window` in the visible frame of the active screen, every time it opens:
+    /// the screen with the key window, else the one whose menu bar is active
+    /// (`NSScreen.main`). `NSWindow.center()` sits a third from the top and only on the
+    /// window's own screen, so Settings could open on a display the user isn't using.
+    static func centre(_ window: NSWindow) {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let visible = screen.visibleFrame
+        let size = window.frame.size
+        window.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2))
     }
 }

@@ -241,7 +241,9 @@ public actor InstallSession {
             // the gentle policy's smaller cache rather than the device's default.
             if !isFast { opened.image.udif?.decodePolicy = options.backgroundDecodePolicy }
             if let licence = opened.image.licence {
-                state = .needsLicence(licence)
+                let fileSystem = opened.fileSystem
+                let preview = try? await Self.onThread(qos: .utility) { Self.preview(in: fileSystem) }
+                state = .needsLicence(licence, preview: preview)
                 guard await waitForLicence() else { return finishCancelled() }
                 licenceAccepted = true
             }
@@ -270,7 +272,7 @@ public actor InstallSession {
         if !licenceAccepted,
             let licence = try? await Self.onThread(qos: .utility, { try DiskImage.licence(atPath: path) })
         {
-            state = .needsLicence(licence)
+            state = .needsLicence(licence, preview: nil)
             guard await waitForLicence() else { return finishCancelled() }
             licenceAccepted = true
         }
@@ -490,6 +492,22 @@ public actor InstallSession {
         for waiter in waiters { waiter.resume() }
     }
 
+    /// The app's name, version, size and icon for the licence screen, when the image holds
+    /// exactly one app. Reads the catalog, `Info.plist` and the icon file only.
+    static func preview(in fileSystem: any FileSystem) -> AppPreview? {
+        guard let apps = try? DMGReader.apps(in: fileSystem), apps.count == 1, let app = apps.first else {
+            return nil
+        }
+        let info = BundleInfo.read(app: app, in: fileSystem)
+        var size: UInt64 = 0
+        try? DMGReader.walk(fileSystem, from: app) { _, entry in
+            if entry.kind == .file { size &+= entry.size }
+        }
+        return AppPreview(
+            name: info?.displayName ?? app.name.trimmingAppSuffix, version: info?.shortVersion, size: size,
+            iconData: info?.iconData(app: app, in: fileSystem))
+    }
+
     /// The single top-level app, or nil after setting `cannotInstall`.
     private func chooseApp(in fileSystem: any FileSystem) throws -> Entry? {
         let apps = try DMGReader.apps(in: fileSystem)
@@ -660,9 +678,8 @@ private struct Prepared: Sendable {
         try DMGReader.walk(fileSystem, from: app) { _, entry in
             if entry.kind == .file { size &+= entry.size }
         }
-        let fallbackName = app.name.hasSuffix(".app") ? String(app.name.dropLast(".app".count)) : app.name
         var summary = AppSummary(
-            bundleName: app.name, name: info?.displayName ?? fallbackName, version: info?.shortVersion,
+            bundleName: app.name, name: info?.displayName ?? app.name.trimmingAppSuffix, version: info?.shortVersion,
             bundleIdentifier: info?.identifier, size: size, iconFile: nil, signer: nil, teamID: nil,
             isNotarized: false, update: nil)
 
@@ -717,4 +734,9 @@ final class ProgressThrottle: Sendable {
         }
         return false
     }
+}
+
+extension String {
+    /// "Rectangle.app" → "Rectangle".
+    var trimmingAppSuffix: String { hasSuffix(".app") ? String(dropLast(".app".count)) : self }
 }

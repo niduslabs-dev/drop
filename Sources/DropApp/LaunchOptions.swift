@@ -14,6 +14,9 @@ enum Log {
 /// - `--trash <folder>`: move trashed disk images and replaced apps here instead of the
 ///   Trash, so a test never touches the real one.
 /// - `--no-login-item`: leave the login item alone (implied by any of the above).
+/// - `--background-test`: a test copy that never takes focus or changes the Dock: no
+///   activation, no key window, no activation policy change; windows order in behind the
+///   user's (`WindowPresence`). Implies `--no-login-item`. Every `--demo` is one too.
 /// - Debug builds only: `--demo <state>` shows one panel state with sample data (or an
 ///   onboarding page, `onboarding-1` to `onboarding-5`, `onboarding-2-denied`),
 ///   `--appearance light|dark` forces the appearance for screenshots, and
@@ -32,6 +35,8 @@ struct LaunchOptions {
     var probeHandler = false
     /// Debug: forget onboarding in the test domain, then show it.
     var resetOnboarding = false
+    /// `--background-test`.
+    var backgroundTest = false
 
     init(arguments: [String] = CommandLine.arguments) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -41,6 +46,7 @@ struct LaunchOptions {
             case "--destination": destination = iterator.next().map(Self.folder)
             case "--trash": trashFolder = iterator.next().map(Self.folder)
             case "--no-login-item": manageLoginItem = false
+            case "--background-test": backgroundTest = true
             #if DEBUG
                 case "--demo": demo = iterator.next()
                 case "--appearance": appearance = iterator.next()
@@ -51,13 +57,16 @@ struct LaunchOptions {
             }
         }
         if watchFolder != nil || destination != nil || trashFolder != nil || demo != nil || probeHandler
-            || resetOnboarding
+            || resetOnboarding || backgroundTest
         {
             manageLoginItem = false
         }
     }
 
     var isTesting: Bool { !manageLoginItem }
+
+    /// Never take focus or change the activation policy (`--background-test`, any demo).
+    var isBackgroundTest: Bool { backgroundTest || demo != nil }
 
     /// A panel test launch: any of `--watch`, `--destination` or `--trash`.
     var usesTestFolders: Bool { watchFolder != nil || destination != nil || trashFolder != nil }

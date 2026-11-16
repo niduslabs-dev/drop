@@ -14,8 +14,7 @@ struct PanelView: View {
             switch model.board {
             case .main: MainBoard(model: model)
             case .update: UpdateBoard(model: model)
-            case .installing: InstallingBoard(model: model)
-            case .done: DoneBoard(model: model)
+            case .installing, .done: MainBoard(model: model)
             case .warning: WarningBoard(model: model)
             case .refused: RefusedBoard(model: model)
             case .fallback: FallbackBoard(model: model)
@@ -47,21 +46,31 @@ struct VersionLine: View {
     }
 }
 
-// MARK: - 1 · New disk image found
+// MARK: - 1 · New disk image found, installing, installed
 
+/// Boards 1 to 3 as one view (Progress board): Install fills as the progress and becomes
+/// Open, Not now becomes Cancel and then Show in Finder, the status line under the name
+/// blur-swaps, and the tick lands on the icon. The popup keeps its width throughout; the
+/// Install capsule widens smoothly to fit its label.
 struct MainBoard: View {
     @Bindable var model: PanelModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var working: Bool { model.board == .installing }
+    private var done: Bool { model.board == .done }
 
     var body: some View {
         PanelCard {
             ImageHeader(model: model)
             TitleRow(icon: model.icon, title: model.appName) {
-                StatusSwap(key: model.summary == nil) {
-                    if model.summary == nil {
-                        Text("Reading\u{2026}")
-                    } else {
-                        VersionLine(summary: model.summary)
-                    }
+                StatusSwap(key: status) { Text(status).monospacedDigit() }
+            } badge: {
+                if done {
+                    DrawnCheck(lineWidth: Theme.Icon.badgeStroke)
+                        .padding(Theme.Icon.badgeBorder)
+                        .background(Circle().fill(Theme.Colour.surface))
+                        .frame(width: Theme.Icon.badge, height: Theme.Icon.badge)
+                        .offset(x: Theme.Icon.badgeOffset, y: Theme.Icon.badgeOffset)
                 }
             }
             SignerCard(model: model)
@@ -78,15 +87,54 @@ struct MainBoard: View {
                     .toggleStyle(.nidusSwitch)
             }
             .font(Theme.Font.body)
+            .disabled(working || done)
             ButtonRow {
-                Button("Open disk image") { model.send(.openImage) }.buttonStyle(.nidusLink())
+                if done {
+                    Button("Undo") { model.send(.undoTrash) }.buttonStyle(.nidusLink())
+                        .opacity(model.trashedImage == nil ? 0 : 1)
+                        .disabled(model.trashedImage == nil)
+                        .accessibilityHidden(model.trashedImage == nil)
+                } else {
+                    Button("Open disk image") { model.send(.openImage) }.buttonStyle(.nidusLink())
+                        .disabled(working)
+                }
             } trailing: {
-                Button("Not now") { model.send(.notNow) }.buttonStyle(.nidusSecondary)
-                Button("Install") { model.send(.install) }.buttonStyle(.nidusPrimary)
-                    .keyboardShortcut(.defaultAction)
+                if done {
+                    Button("Show in Finder") { model.send(.showAppInFinder) }.buttonStyle(.nidusSecondary)
+                    Button("Open \(model.appName)") { model.send(.openApp) }.buttonStyle(.nidusPrimary)
+                        .keyboardShortcut(.defaultAction)
+                } else if working {
+                    Button("Cancel") { model.send(.cancelInstall) }.buttonStyle(.nidusSecondary)
+                        .keyboardShortcut(.cancelAction)
+                    if model.skipsProgress {
+                        Button("Install") {}.buttonStyle(.nidusPrimary)
+                    } else {
+                        ProgressCapsule(fraction: min(model.progress?.fraction ?? 0, Theme.Motion.progressCeiling))
+                    }
+                } else {
+                    Button("Not now") { model.send(.notNow) }.buttonStyle(.nidusSecondary)
+                    Button("Install") { model.send(.install) }.buttonStyle(.nidusPrimary)
+                        .keyboardShortcut(.defaultAction)
+                }
             }
+            .animation(reduceMotion ? nil : Theme.Motion.popup, value: model.board)
             .padding(.top, Theme.Panel.buttonRowTopPadding)
         }
+    }
+
+    /// The line under the name: reading, version and size, what's being done, the result.
+    private var status: String {
+        if done {
+            let version = model.summary?.version.map { "Version \($0) in " } ?? "In "
+            return version + model.destinationName
+        }
+        if working {
+            guard let progress = model.progress, progress.fraction < 1 else { return "Checking the signature" }
+            return "Copying files \u{00B7} \(Format.progress(progress))"
+        }
+        guard let summary = model.summary else { return "Reading\u{2026}" }
+        return [summary.version.map { "Version \($0)" }, Format.size(summary.size)].compactMap(\.self)
+            .joined(separator: " \u{00B7} ")
     }
 }
 
@@ -197,160 +245,6 @@ struct UpdateBoard: View {
     }
 }
 
-// MARK: - 2 · Installing
-
-struct InstallingBoard: View {
-    let model: PanelModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// How many of the steps have been revealed (one every `Theme.Motion.stepInterval`).
-    @State private var revealed = 0
-
-    var body: some View {
-        PanelCard {
-            TitleRow(icon: model.icon, title: "Installing \(model.appName)") {
-                Text("To \(model.destinationName)")
-            }
-            VStack(spacing: Theme.Progress.spacing) {
-                ProgressBar(fraction: min(model.progress?.fraction ?? 0, Theme.Motion.progressCeiling))
-                HStack {
-                    StatusSwap(key: copying) { Text(copying ? "Copying files" : "Checking the signature") }
-                    Spacer()
-                    if let progress = model.progress {
-                        Text(Format.progress(progress))
-                            .monospacedDigit()
-                            .contentTransition(reduceMotion ? .identity : .numericText())
-                            .animation(reduceMotion ? nil : Theme.Motion.numbers, value: progress.bytesDone)
-                    }
-                }
-                .font(Theme.Font.small)
-                .foregroundStyle(Theme.Colour.secondaryText)
-            }
-            InfoCard {
-                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                    StepRow(title: step.title, step: step.state)
-                        .opacity(index < revealed ? 1 : 0)
-                        .offset(y: index < revealed || reduceMotion ? 0 : Theme.Motion.stepRise)
-                }
-            }
-            ButtonRow {
-                Button("Cancel") { model.send(.cancelInstall) }.buttonStyle(.nidusSecondary)
-                    .keyboardShortcut(.cancelAction)
-            }
-        }
-        .task {
-            // Steps appear one at a time; the task ends with the board, so nothing runs
-            // while the panel is hidden.
-            while revealed < steps.count, !Task.isCancelled {
-                withAnimation(reduceMotion ? nil : Theme.Motion.step) { revealed += 1 }
-                try? await Task.sleep(for: Theme.Motion.stepInterval)
-            }
-        }
-    }
-
-    private var copying: Bool { (model.progress?.fraction ?? 0) < 1 }
-
-    private var steps: [(title: String, state: StepRow.Step)] {
-        [
-            ("Read the disk image", .done),
-            ("Copy \(model.appName)", copying ? .current : .done),
-            ("Check the signature", copying ? .pending : .current),
-            ("Move into \(model.destinationName)", .pending),
-        ]
-    }
-}
-
-struct ProgressBar: View {
-    let fraction: Double
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(Theme.Progress.trackOpacity))
-                Capsule().fill(Theme.Colour.accent)
-                    .frame(width: geometry.size.width * min(max(fraction, 0), 1))
-            }
-        }
-        .frame(height: Theme.Progress.height)
-        .animation(reduceMotion ? nil : Theme.Motion.progress, value: fraction)
-        .accessibilityElement()
-        .accessibilityLabel("Install progress")
-        .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
-    }
-}
-
-struct StepRow: View {
-    enum Step { case done, current, pending }
-    let title: String
-    let step: Step
-
-    var body: some View {
-        HStack(spacing: Theme.Card.iconSpacing) {
-            Group {
-                switch step {
-                case .done:
-                    Image(systemName: "checkmark.circle").foregroundStyle(Theme.Colour.good)
-                case .current:
-                    ProgressView().controlSize(.mini)
-                case .pending:
-                    Image(systemName: "circle").foregroundStyle(Theme.Colour.tertiaryText)
-                }
-            }
-            .font(.system(size: Theme.Card.rowGlyph, weight: .semibold))
-            .frame(width: Theme.Card.rowIcon, height: Theme.Card.rowIcon)
-            Text(title)
-                .fontWeight(step == .current ? .semibold : .regular)
-                .foregroundStyle(step == .current ? Theme.Colour.bodyText : Theme.Colour.secondaryText)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-// MARK: - 3 · Installed
-
-struct DoneBoard: View {
-    let model: PanelModel
-
-    var body: some View {
-        PanelCard {
-            TitleRow(icon: model.icon, title: "\(model.appName) is installed") {
-                Text(subtitle).monospacedDigit()
-            } badge: {
-                DrawnCheck(lineWidth: Theme.Icon.badgeStroke)
-                    .padding(Theme.Icon.badgeBorder)
-                    .background(Circle().fill(Theme.Colour.surface))
-                    .frame(width: Theme.Icon.badge, height: Theme.Icon.badge)
-                    .offset(x: Theme.Icon.badgeOffset, y: Theme.Icon.badgeOffset)
-            }
-            if model.trashedImage != nil {
-                InfoCard {
-                    HStack(spacing: Theme.Card.iconSpacing) {
-                        Image(systemName: "trash").font(.system(size: Theme.Card.rowGlyph))
-                            .foregroundStyle(Theme.Colour.secondaryText)
-                            .frame(width: Theme.Card.rowIcon, height: Theme.Card.rowIcon)
-                        Text("Disk image moved to the Trash.").fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: Theme.Card.iconSpacing)
-                        Button("Undo") { model.send(.undoTrash) }.buttonStyle(.nidusLink())
-                    }
-                }
-            }
-            ButtonRow {
-                Button("Show in Finder") { model.send(.showAppInFinder) }.buttonStyle(.nidusSecondary)
-                Button("Open \(model.appName)") { model.send(.openApp) }.buttonStyle(.nidusPrimary)
-                    .keyboardShortcut(.defaultAction)
-            }
-            Text("Closes on its own in a few seconds.")
-                .font(Theme.Font.caption).foregroundStyle(Theme.Colour.secondaryText)
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var subtitle: String {
-        let version = model.summary?.version.map { "Version \($0) in " } ?? "In "
-        return version + model.destinationName
-    }
-}
-
 // MARK: - Not notarized
 
 struct WarningBoard: View {
@@ -374,7 +268,7 @@ struct WarningBoard: View {
         }
     }
 
-    private var message: String {
+    var message: String {
         guard case .warning(_, let warning) = model.state else { return "" }
         switch warning {
         case .notNotarized:
@@ -409,7 +303,7 @@ struct RefusedBoard: View {
         }
     }
 
-    private var copy: (title: String, message: String) {
+    var copy: (title: String, message: String) {
         guard case .refused(_, let refusal) = model.state else { return ("", "") }
         switch refusal {
         case .damaged:
@@ -547,7 +441,7 @@ struct LicenceBoard: View {
     }
 
     private var licence: LicenceAgreement? {
-        if case .needsLicence(let licence) = model.state { return licence }
+        if case .needsLicence(let licence, _) = model.state { return licence }
         return nil
     }
 
@@ -562,15 +456,17 @@ struct LicenceBoard: View {
 /// A scrolling, read-only text view, so RTF licences keep their formatting.
 struct LicenceTextView: NSViewRepresentable {
     let text: NSAttributedString
+    /// The popup draws the text background; the install window's card shows through.
+    var drawsBackground = true
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         scroll.hasVerticalScroller = true
-        scroll.drawsBackground = true
+        scroll.drawsBackground = drawsBackground
         if let textView = scroll.documentView as? NSTextView {
             textView.isEditable = false
             textView.isSelectable = true
-            textView.drawsBackground = true
+            textView.drawsBackground = drawsBackground
             textView.backgroundColor = .textBackgroundColor
             textView.usesAdaptiveColorMappingForDarkAppearance = true
             textView.textContainerInset = NSSize(

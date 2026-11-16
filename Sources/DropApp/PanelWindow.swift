@@ -101,6 +101,14 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     var windowNumber: Int { presentation == .window ? window.windowNumber : popup.windowNumber }
+    /// The install window is up (not the popup).
+    var isWindowVisible: Bool { window.isVisible }
+
+    /// Brings the install window forward, for a click on the Dock icon.
+    func bringWindowForward() {
+        guard window.isVisible else { return }
+        WindowPresence.present(window)
+    }
     var isVisible: Bool { popup.isVisible || window.isVisible }
 
     /// Shows `model`, or does nothing when it's already up (its boards update in place).
@@ -120,6 +128,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         slide = nil
         popup.orderOut(nil)
         window.orderOut(nil)
+        ActivationPolicy.closed(.install)
         // Drop the views, so their tasks and timers stop while nothing is shown.
         popupHosting?.rootView = AnyView(EmptyView())
         windowHosting?.rootView = AnyView(EmptyView())
@@ -127,9 +136,10 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         presentation = nil
     }
 
-    /// Makes the shown panel key without activating Drop, for the password field.
+    /// Makes the shown panel key without activating Drop, for the password field. Never in
+    /// a background test: a key non-activating panel would take the user's keystrokes.
     func focus() {
-        if presentation == .popup { popup.makeKey() }
+        if presentation == .popup, !WindowPresence.isBackgroundTest { popup.makeKey() }
     }
 
     private func dismissShown() {
@@ -146,6 +156,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
 
     private func showPopup(_ model: PanelModel) {
         if window.isVisible { window.orderOut(nil) }
+        ActivationPolicy.closed(.install)
         presentation = .popup
         let root = AnyView(
             PanelView(model: model)
@@ -181,7 +192,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             popup.setFrame(target, display: true)
             popup.alphaValue = 0
-            popup.orderFrontRegardless()
+            WindowPresence.presentWithoutFocus(popup)
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = Theme.Motion.fadeDuration
                 popup.animator().alphaValue = 1
@@ -190,7 +201,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
             popup.alphaValue = 1
             let slide = FrameSlide(window: popup, target: target, offset: target.width + Theme.Popup.screenInset)
             slide.start()
-            popup.orderFrontRegardless()
+            WindowPresence.presentWithoutFocus(popup)
             self.slide = slide
         }
         popup.invalidateShadow()
@@ -236,7 +247,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         presentation = .window
         let titleBar = Self.titleBarHeight(for: window.styleMask)
         let root = AnyView(
-            PanelView(model: model)
+            InstallWindowView(model: model)
                 .environment(\.panelPresentation, .window)
                 .environment(\.titleBarHeight, titleBar)
                 .id(model.id)
@@ -265,7 +276,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     static func titleBarHeight(for styleMask: NSWindow.StyleMask) -> CGFloat {
         var plain = styleMask
         plain.remove(.fullSizeContentView)
-        let content = NSRect(x: 0, y: 0, width: Theme.Panel.width, height: Theme.Panel.width)
+        let content = NSRect(x: 0, y: 0, width: Theme.InstallWindow.width, height: Theme.InstallWindow.width)
         return NSWindow.frameRect(forContentRect: content, styleMask: plain).height - content.height
     }
 
@@ -286,8 +297,8 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         window.setFrame(frame, display: true)
         if windowPlacementPending {
             windowPlacementPending = false
-            NSApp.activate()
-            window.makeKeyAndOrderFront(nil)
+            ActivationPolicy.opened(.install)
+            WindowPresence.present(window)
             if let model { Log.panel.info("panel ordered front \(model.dmg.lastPathComponent, privacy: .public)") }
         }
     }

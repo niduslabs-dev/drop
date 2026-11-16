@@ -320,7 +320,7 @@ struct MountFallbackCorpusTests {
         let session = InstallSession(dmg: try Fixtures.sample("zed", "Zed-aarch64.dmg"), options: options)
         await session.start()
         let shown = await waitFor(session) { $0.isSettled }
-        guard case .needsLicence(let licence) = shown else {
+        guard case .needsLicence(let licence, _) = shown else {
             Issue.record("expected Zed's licence first, got \(shown)")
             return
         }
