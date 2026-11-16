@@ -1,0 +1,37 @@
+# Tests CI skips: they read notarized apps that scripts/fixtures-verifier.sh copies out of
+# real DMGs kept out of git (.claude/spike, .claude/samples). Found by running the suite in
+# a clean checkout. One `Suite/test` per line, joined into one `swift test --skip` regex.
+AssessmentTests/notarized\(
+AssessmentTests/rejected\(
+SameDeveloperTests/realApps\(
+SigningInfoTests/developmentSigned\(
+SigningInfoTests/notarizedAppsAreDeveloperID\(
+SigningInfoTests/rectangleDetails\(
+SigningInfoTests/stapledAppsReportTicket\(
+SigningInfoTests/teamIDMatchesCodesign\(
+SigningInfoTests/universalAppListsEverySlice\(
+SpctlFallbackTests/brokenFrameworkFallsBack\(
+SpctlFallbackTests/cancellationKillsChild\(
+SpctlFallbackTests/missingToolIsUnavailable\(
+SpctlFallbackTests/realAppsMatchFramework\(
+SpctlFallbackTests/syncOverloadUsesRoute\(
+SpctlFallbackTests/syncTimeoutKillsChild\(
+SpctlFallbackTests/timeoutKillsChild\(
+SpctlFallbackTests/verdictInstallsWithoutFramework\(
+StapleTests/matchesStapler\(
+StapleTests/refusesOccupiedPath\(
+StapleTests/refusesTicketForAnotherApp\(
+StapleTests/refusesUnsigned\(
+StapleTests/refusesWhenAlreadyStapled\(
+StapleTests/staplesAndStillVerifies\(
+TicketTests/appTicketParses\(
+TicketTests/coversOnlyItsOwnApp\(
+TicketTests/extractsFromDMG\(
+TicketTests/rectangleTicketMatchesSpike\(
+TicketTests/signedAndStapledDMG\(
+TicketTests/unstapledDMGHasNone\(
+ValidationTests/cancellationStopsValidation\(
+ValidationTests/realAppsAreValid\(
+ValidationTests/timeoutBoundsValidation\(
+VerdictTests/developmentSignedWarns\(
+VerdictTests/notarizedInstalls\(

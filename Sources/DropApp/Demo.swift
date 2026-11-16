@@ -36,7 +36,9 @@
             "window-refused", "window-update", "onboarding-1",
             "onboarding-2", "onboarding-2-denied", "onboarding-3",
             "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
-            "select-main", "select-main-hover", "select-window", "select-window-key",
+            "select-main", "select-main-hover", "select-window", "select-window-key", "update-ready",
+            "update-available", "update-ready-plain", "settings-update", "settings-update-idle",
+            "settings-update-bottom", "settings-update-idle-bottom",
         ]
 
         private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
@@ -56,6 +58,10 @@
             }
             if state.hasPrefix("onboarding-") {
                 runOnboarding(state, app: app)
+                return
+            }
+            if state.hasPrefix("update-") || state.hasPrefix("settings-update") {
+                runUpdate(state, app: app)
                 return
             }
             if state.hasPrefix("settings") {
@@ -89,6 +95,58 @@
                 // Report once the slide-in and the content's blur have settled.
                 try? await Task.sleep(for: settle)
                 report(app.panel.windowNumber)
+            }
+        }
+
+        /// The Updates board's sample: 1.0 to 1.1, 4 MB, three notes, checked today at 09:12.
+        private static let sampleUpdate = AvailableUpdate(
+            version: "1.1", size: 4 * megabyte,
+            notes: [
+                "Faster popups for big disk images", "Install to remembers your choice", "Fixes for licence screens",
+            ],
+            releaseNotesURL: URL(string: "https://github.com/niduslabs-dev/drop/releases"))
+
+        /// Update surfaces with the board's sample on a model of their own (Sparkle never
+        /// runs): `update-ready` and `update-available` (automatic installs off) are the
+        /// popup, `update-ready-plain` the popup without notes, `settings-update` Settings
+        /// with the ready banner, `settings-update-idle` Settings with nothing pending; a
+        /// `-bottom` suffix scrolls Settings to the Drop group.
+        private static func runUpdate(_ state: String, app: AppDelegate) {
+            let model = app.updates
+            model.isEnabled = true
+            var morning = Calendar.current.dateComponents([.year, .month, .day], from: .now)
+            morning.hour = 9
+            morning.minute = 12
+            model.lastChecked = Calendar.current.date(from: morning)
+            model.requestCheck = {}
+            switch state {
+            case "update-available":
+                model.automatic = false
+                model.demo(.available(sampleUpdate), popup: true)
+            case "update-ready-plain":
+                let plain = AvailableUpdate(version: "1.1", size: 4 * megabyte, notes: [], releaseNotesURL: nil)
+                model.demo(.ready(plain), popup: true)
+            case "settings-update", "settings-update-bottom":
+                model.demo(.ready(sampleUpdate), popup: false)
+            case "settings-update-idle", "settings-update-idle-bottom":
+                model.demo(.idle, popup: false)
+            default:
+                model.demo(.ready(sampleUpdate), popup: true)
+            }
+            Task {
+                if state.hasPrefix("settings") {
+                    app.settings.show()
+                    if state.hasSuffix("-bottom") {
+                        try? await Task.sleep(for: settle)
+                        app.settings.demoScroll(.bottom)
+                    }
+                    try? await Task.sleep(for: redraw)
+                    report(app.settings.windowNumber ?? 0)
+                } else {
+                    app.updatePopup.refresh()
+                    try? await Task.sleep(for: settle)
+                    report(app.updatePopup.windowNumber)
+                }
             }
         }
 

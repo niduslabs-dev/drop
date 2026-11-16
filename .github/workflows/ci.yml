@@ -1,0 +1,63 @@
+# Build, test, lint and assemble Drop.app (ad hoc signed) on every push to main and every
+# pull request. Needs no secrets, so pull requests from forks run it as they are.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode 27
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          swift --version
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-xcode27-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-xcode27-
+
+      - name: Lint
+        run: swift format lint --strict --recursive Sources Tests Package.swift
+
+      - name: Build
+        run: scripts/swift.sh build
+
+      # The fixture images and apps the tests read (installer and mount need verifier's).
+      # Real-app fixtures come from DMGs kept out of git (.claude/samples), so CI skips the
+      # tests that need them; corpus and timing tests are opt-in and stay off.
+      - name: Fixtures
+        run: |
+          scripts/fixtures-diskimage.sh
+          scripts/fixtures-hfsplus.sh
+          scripts/fixtures-apfs.sh
+          scripts/fixtures-verifier.sh
+          scripts/fixtures-installer.sh
+          scripts/fixtures-mount.sh
+
+      - name: Test
+        run: scripts/swift.sh test --skip "$(grep -v '^#' .github/ci-skip-tests.txt | paste -sd'|' -)"
+
+      - name: Assemble Drop.app
+        run: |
+          scripts/build-app.sh
+          codesign --verify --deep --strict --verbose=2 .build/Drop.app

@@ -92,6 +92,8 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
     private var presentation: PanelPresentation?
     /// The user asked to dismiss the shown model (Esc, or the window's close button).
     var onDismiss: (PanelModel) -> Void = { _ in }
+    /// The popup or window was shown or closed: the update popup waits while either is up.
+    var onVisibilityChange: () -> Void = {}
 
     override init() {
         super.init()
@@ -110,6 +112,8 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         WindowPresence.present(window)
     }
     var isVisible: Bool { popup.isVisible || window.isVisible }
+    /// A model is shown or about to be (its entrance can wait for the first size).
+    var isShowingModel: Bool { model != nil }
 
     /// Shows `model`, or does nothing when it's already up (its boards update in place).
     func show(_ model: PanelModel) {
@@ -119,6 +123,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         case .watched: showPopup(model)
         case .opened: showWindow(model)
         }
+        onVisibilityChange()
     }
 
     func close() {
@@ -134,6 +139,7 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
         windowHosting?.rootView = AnyView(EmptyView())
         model = nil
         presentation = nil
+        onVisibilityChange()
     }
 
     /// Makes the shown panel key without activating Drop, for the password field. Never in
@@ -306,9 +312,9 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
 
 /// Slides a window from `offset` points right of `target` into place on the popup spring
 /// (response 0.4, damping 0.9), one step per display refresh. The target can move while it
-/// runs (the content resizes as the board fills in).
+/// runs (the content resizes as the board fills in). Also the update popup's entrance.
 @MainActor
-private final class FrameSlide: NSObject {
+final class FrameSlide: NSObject {
     private weak var window: NSWindow?
     var target: NSRect
     private let offset: CGFloat

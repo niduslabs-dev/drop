@@ -24,6 +24,8 @@ enum Log {
 ///   onboarding page, `onboarding-1` to `onboarding-5`, `onboarding-2-denied`),
 ///   `--appearance light|dark` forces the appearance for screenshots, and
 ///   `--reset-onboarding` clears the test domain's onboarding state and shows onboarding.
+///   `--update-feed <url>` runs Sparkle against that appcast (a local test feed signed with
+///   a throwaway key) and checks at once; without it debug builds never start Sparkle.
 ///
 /// Panel test launches (`--watch`, `--destination`, `--trash`) skip onboarding, so scripted
 /// install checks see the panel straight away; add `--reset-onboarding` to run it there.
@@ -41,6 +43,8 @@ struct LaunchOptions {
     var resetOnboarding = false
     /// `--background-test`.
     var backgroundTest = false
+    /// Debug: the test appcast Sparkle reads instead of `SUFeedURL`.
+    var updateFeed: URL?
 
     init(arguments: [String] = CommandLine.arguments) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -57,6 +61,7 @@ struct LaunchOptions {
                 case "--appearance": appearance = iterator.next()
                 case "--probe-handler": probeHandler = true
                 case "--reset-onboarding": resetOnboarding = true
+                case "--update-feed": updateFeed = iterator.next().flatMap(URL.init(string:))
             #endif
             default: break
             }

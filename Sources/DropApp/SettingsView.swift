@@ -4,9 +4,11 @@ import SwiftUI
 /// The SettingsWindow primitive (SettingsV2 board): a "Settings" page title inside the
 /// content, then groups of SettingsRows in r14 cards. One setting per row, one caption
 /// line at most, longer text behind an ⓘ, lists in a sheet, no footer notes. Pausing is
-/// the Ask switch; Quit Drop is in the last group, since Drop has no menu bar menu.
+/// the Ask switch; Quit Drop is in the last group, since Drop has no menu bar menu. While an
+/// update waits for a restart its banner leads the page (Updates board).
 struct SettingsView: View {
     @Bindable var preferences: Preferences
+    @Bindable var updates: UpdateModel
     let changeFolder: () -> Void
     let setOpenAtLogin: (Bool) -> Void
     let setOpensDiskImages: (Bool) -> Void
@@ -64,6 +66,7 @@ struct SettingsView: View {
                 .accessibilityAddTraits(.isHeader)
                 .padding(.bottom, Theme.Settings.titleToGroups)
             VStack(alignment: .leading, spacing: Theme.Settings.groupSpacing) {
+                if updates.isReady { UpdateBanner(model: updates) }
                 group("Watching") {
                     SwitchRow(
                         title: "Ask when a new disk image arrives", caption: "Turn off to pause watching.",
@@ -90,8 +93,18 @@ struct SettingsView: View {
                         isOn: handlerBinding)
                 }
                 group("Drop") {
-                    SettingsRow(version.isEmpty ? "Drop" : "Version \(version)") {
-                        Button("Quit Drop", action: quit).buttonStyle(.nidusSmall)
+                    // The caption reads the clock when the page draws; Settings is redrawn on
+                    // every open and on each update event, which is often enough for "today".
+                    SettingsRow(version.isEmpty ? "Drop" : "Version \(version)", caption: updates.versionCaption()) {
+                        Button("Check for Updates") { updates.perform(.check) }.buttonStyle(.nidusSmall)
+                            .disabled(!updates.isEnabled || updates.phase == .checking)
+                    }
+                    SwitchRow(
+                        title: "Install updates automatically",
+                        caption: "Downloads in the background and installs when Drop quits.",
+                        isOn: $updates.automatic)
+                    SettingsRow("Quit Drop") {
+                        Button("Quit", action: quit).buttonStyle(.nidusSmall)
                     }
                 }
             }

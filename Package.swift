@@ -21,7 +21,8 @@ import PackageDescription
 ///   through the licence, background staging and the check to the final rename.
 /// - `Onboarding`: first-launch onboarding's state machine, apart from the app so its
 ///   rules are tested with fake folder access, default handler and login item.
-/// - `DropApp`: the menu bar app: Downloads watcher, the install panel, Settings.
+/// - `DropApp`: the background app: Downloads watcher, the install panel, Settings, and
+///   updates through Sparkle (the package's one dependency) with Drop's own surfaces.
 let package = Package(
     name: "Drop",
     platforms: [.macOS(.v15)],
@@ -31,6 +32,11 @@ let package = Package(
         .executable(name: "dmg-inspect", targets: ["DMGInspect"]),
         .executable(name: "drop-impact", targets: ["DropImpact"]),
         .executable(name: "Drop", targets: ["DropApp"]),
+    ],
+    dependencies: [
+        // Updates (Developer ID builds from GitHub Releases). Pinned exactly: a new Sparkle is a
+        // deliberate change, checked against its changelog and the custom user driver.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")
     ],
     targets: [
         .target(name: "ReaderCore"),
@@ -55,7 +61,10 @@ let package = Package(
         .executableTarget(name: "DropImpact", dependencies: ["Installer", "DiskImage", "Extractor"]),
         .executableTarget(
             name: "DropApp",
-            dependencies: ["Installer", "DiskImage", "Extractor", "Mounter", "Verifier", "Onboarding"],
+            dependencies: [
+                "Installer", "DiskImage", "Extractor", "Mounter", "Verifier", "Onboarding",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"), .linkedFramework("SwiftUI"), .linkedFramework("ServiceManagement"),
             ]

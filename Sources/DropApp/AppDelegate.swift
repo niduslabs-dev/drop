@@ -52,6 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var panel: PanelWindowController!
     private(set) var controller: InstallController!
     private(set) var settings: SettingsWindowController!
+    /// The state every update surface reads; fed by `updateDriver` when Sparkle runs.
+    let updates = UpdateModel(
+        currentVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+    private var updateDriver: UpdateDriver?
+    private(set) var updatePopup: UpdatePopupController!
     private var watcher: DownloadsWatcher?
     private(set) var onboarding: OnboardingCoordinator!
     private(set) var onboardingWindow: OnboardingWindowController?
@@ -91,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return AnyView(
                 SettingsView(
                     preferences: self.preferences,
+                    updates: self.updates,
                     changeFolder: { [weak self] in self?.chooseWatchedFolder() },
                     setOpenAtLogin: { [weak self] in self?.setLoginItem($0) },
                     setOpensDiskImages: { [weak self] in self?.setOpensDiskImages($0) },
@@ -109,6 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettingsFromMenu(_:)))
+        updates.openURL = { NSWorkspace.shared.open($0) }
+        updatePopup = UpdatePopupController(model: updates, installPanel: panel)
+        panel.onVisibilityChange = { [weak self] in self?.updatePopup.refresh() }
 
         isLaunched = true
         for url in pendingOpens { controller.enqueue(url, origin: .opened) }
@@ -138,6 +147,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observePreferences()
         startOnboarding()
         updateWatcher()
+        startUpdates()
+    }
+
+    /// Starts Sparkle in a normal launch of a release build. Test launches leave it off,
+    /// except a debug `--update-feed`, which runs it against a local test appcast.
+    private func startUpdates() {
+        var feed: URL?
+        #if DEBUG
+            feed = launch.updateFeed
+            guard feed != nil else { return }
+        #else
+            guard !launch.isTesting else { return }
+        #endif
+        let driver = UpdateDriver(model: updates, feedOverride: feed)
+        driver.start()
+        updateDriver = driver
     }
 
     // MARK: Onboarding

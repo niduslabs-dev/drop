@@ -67,6 +67,19 @@ enum Theme {
 
     /// Where the popup sits: the Arrival board's top right, this far inside the visible
     /// frame (below the menu bar, left of the Dock if it's on the right).
+    /// The Updates board: the update popup and the Settings banner.
+    enum Update {
+        /// Title to the "1.0 → 1.1" line.
+        static let titleSpacing: CGFloat = 3
+        /// Between release-note lines.
+        static let noteSpacing: CGFloat = Space.xxs
+        static let bulletGap: CGFloat = Space.xs
+        static let bannerSpacing: CGFloat = Space.m
+        static let bannerIcon: CGFloat = 28
+        /// The banner's moss tint over the window.
+        static let bannerFillOpacity: Double = 0.10
+    }
+
     enum Popup {
         static let screenInset: CGFloat = 12
     }

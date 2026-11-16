@@ -17,7 +17,7 @@ Early. The disk image reader is done; the app isn't built yet.
 
 ## Building
 
-Needs Xcode 26 or later on macOS 15 or later.
+Needs Xcode 27 or later on macOS 15 or later.
 
 ```sh
 scripts/swift.sh build
@@ -26,7 +26,11 @@ scripts/swift.sh test
 scripts/swift.sh run dmg-inspect path/to/App.dmg
 ```
 
-`scripts/swift.sh` runs `swift` with Homebrew's LLVM build settings removed, which otherwise break Xcode's toolchain. The fixture scripts build small disk images with `hdiutil` into `.build/fixtures/`.
+`scripts/swift.sh` runs `swift` with Homebrew's LLVM build settings removed, which otherwise break Xcode's toolchain. The fixture scripts build small disk images with `hdiutil` into `.build/fixtures/`. `scripts/build-app.sh` assembles `.build/Drop.app`, signed ad hoc.
+
+## Releases and updates
+
+Releases are signed with Developer ID, notarized by Apple and published on [GitHub Releases](https://github.com/niduslabs-dev/drop/releases) by a workflow, never from a laptop. Drop updates itself with [Sparkle](https://sparkle-project.org): once a day it checks the latest release's `appcast.xml`, downloads in the background, verifies the EdDSA signature and installs when Drop quits, or straight away if you choose. Drop isn't sandboxed: it writes apps to Applications and reads your Downloads folder.
 
 ## Contributing
 
