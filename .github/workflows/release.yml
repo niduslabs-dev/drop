@@ -146,8 +146,11 @@ jobs:
         run: |
           TARGET=()
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then TARGET=(--target "$GITHUB_SHA"); fi
+          # A copy under a name that never changes, so the website's Download button can
+          # link to releases/latest/download/Drop.dmg. Sparkle's feed uses the versioned one.
+          cp "$DMG" "$RUNNER_TEMP/Drop.dmg"
           gh release create "v$VERSION" "${TARGET[@]}" --title "Drop $VERSION" --notes-file "$NOTES" --latest \
-            "$DMG" "$RUNNER_TEMP/appcast.xml"
+            "$DMG" "$RUNNER_TEMP/Drop.dmg" "$RUNNER_TEMP/appcast.xml"
 
       - name: Clean up signing material
         if: always()
