@@ -34,12 +34,27 @@ public struct StageOptions: Sendable {
     /// (more decode threads, no throttling). Must return quickly; never called after
     /// `stage` returns.
     public var onBoost: (@Sendable () -> Void)?
+    /// Writes files uncached (`F_NOCACHE`) while the stage runs at `.background` and isn't
+    /// boosted, so each write is issued by the throttled worker itself rather than flushed
+    /// later by the kernel's write-back. After a boost the file being written goes back to
+    /// cached writes. Off by default: measured, it made things worse (`impact-bench.md`,
+    /// round 2). The signature check then reads the whole app back from the SSD instead
+    /// of the page cache, which costs the foreground more than the write-back it saves.
+    public var uncachedBackgroundWrites: Bool
+    /// Most bytes per second the workers write together while the stage runs at
+    /// `.background` and isn't boosted; nil writes as fast as the throttle allows. A token
+    /// bucket (`WritePacer`) shared by the workers; a boost lifts it at once.
+    public var backgroundWriteRate: Int?
+    /// For tests: called with each file's staging path and the `F_NOCACHE` value just set
+    /// on it, since `fcntl` can't read that flag back.
+    var noCacheHook: (@Sendable (_ path: String, _ uncached: Bool) -> Void)?
 
     public init(
         quarantine: String? = nil, workerCount: Int = Extractor.defaultWorkerCount,
         priority: Priority = .userInitiated, bufferSize: Int = defaultStreamBufferSize,
         isCancelled: @escaping @Sendable () -> Bool = { false }, job: StagingJob = StagingJob(),
-        onBoost: (@Sendable () -> Void)? = nil
+        onBoost: (@Sendable () -> Void)? = nil, uncachedBackgroundWrites: Bool = false,
+        backgroundWriteRate: Int? = Extractor.defaultBackgroundWriteRate
     ) {
         self.quarantine = quarantine
         self.workerCount = workerCount
@@ -48,6 +63,8 @@ public struct StageOptions: Sendable {
         self.job = job
         self.onBoost = onBoost
         self.isCancelled = isCancelled
+        self.uncachedBackgroundWrites = uncachedBackgroundWrites
+        self.backgroundWriteRate = backgroundWriteRate
     }
 }
 
@@ -86,6 +103,11 @@ public struct StagedApp: Sendable, Hashable {
 /// the descriptor, no `fsync`.
 public enum Extractor {
     public static let defaultWorkerCount = 4
+    /// `StageOptions.backgroundWriteRate`'s default: 200 MB/s. Against a saturating
+    /// foreground reader it cut the slowdown by about a quarter (28.7% to 21.2%) for 3 s
+    /// more on Docker (14.7 s to ready); slower paces cost more time than they saved in
+    /// disk impact (`impact-bench.md`, round 2). Real foreground I/O is far lighter.
+    public static let defaultBackgroundWriteRate: Int? = 200_000_000
 
     /// Makes a fresh staging area on `destinationDirectory`'s volume.
     ///

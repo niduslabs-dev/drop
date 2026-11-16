@@ -12,10 +12,12 @@ public struct InstallOptions: Sendable {
     /// installing is a rename.
     public var destination: URL
     /// `.background` while the popup shows ("ready before you click"); `.userInitiated`
-    /// when the user already asked to install (the Low Power Mode path, a manual open).
+    /// when the user already asked to install (a manual open). Low Power Mode and heat are
+    /// handled by `conditions`, not here.
     public var stagingPriority: StageOptions.Priority
-    /// The image's decode policy while staging runs at `.background`. Install boosts it to
-    /// `.fast`. Injectable so the impact benchmark can compare presets.
+    /// The image's decode policy while a background session reads and stages (from the
+    /// catalog walk on). Install boosts it to `.fast`. `.utility` by default; injectable so
+    /// the impact benchmark can compare presets.
     public var backgroundDecodePolicy: DecodePolicy
     /// The "Skip the 'downloaded from the Internet' prompt" setting. When on, a notarized
     /// app that passes the check gets its quarantine written pre-approved.
@@ -26,12 +28,29 @@ public struct InstallOptions: Sendable {
     /// Told when the image needs the hidden mount. For now it only reports; the session
     /// then ends in `needsMountFallback`.
     public var mountFallback: (@Sendable (_ dmg: URL, _ reason: ReaderError) -> Void)?
+    /// Low Power Mode and thermal pressure: while constrained, a background session waits
+    /// in `waitingToPrepare` instead of staging. `.system` in the app; tests inject their own.
+    public var conditions: StagingConditions
+    /// Background staging's write tuning (`StageOptions.uncachedBackgroundWrites` and
+    /// `backgroundWriteRate`). Injectable so the impact benchmark can compare them.
+    public var uncachedBackgroundWrites: Bool
+    public var backgroundWriteRate: Int?
+    /// When Install is clicked while the signature check runs at utility QoS, cancel it
+    /// and start again at user-initiated rather than wait for it. A running check's thread
+    /// can't be raised from outside, and Code Signing's hashing inherits its QoS.
+    public var reissuesVerificationOnBoost: Bool
+    /// The signature check. Tests replace it to hold a check open; the app never does.
+    var verify: @Sendable (_ app: URL, _ qos: DispatchQoS.QoSClass) async -> Verdict = {
+        await Verifier.verdict(app: $0, qos: $1)
+    }
 
     public init(
         destination: URL, stagingPriority: StageOptions.Priority = .background,
-        backgroundDecodePolicy: DecodePolicy = .background, skipFirstLaunchPrompt: Bool = false,
+        backgroundDecodePolicy: DecodePolicy = .utility, skipFirstLaunchPrompt: Bool = false,
         trash: @escaping @Sendable (URL) throws -> Void,
-        mountFallback: (@Sendable (_ dmg: URL, _ reason: ReaderError) -> Void)? = nil
+        mountFallback: (@Sendable (_ dmg: URL, _ reason: ReaderError) -> Void)? = nil,
+        conditions: StagingConditions = .system, uncachedBackgroundWrites: Bool = false,
+        backgroundWriteRate: Int? = Extractor.defaultBackgroundWriteRate, reissuesVerificationOnBoost: Bool = true
     ) {
         self.destination = destination
         self.stagingPriority = stagingPriority
@@ -39,6 +58,10 @@ public struct InstallOptions: Sendable {
         self.skipFirstLaunchPrompt = skipFirstLaunchPrompt
         self.trash = trash
         self.mountFallback = mountFallback
+        self.conditions = conditions
+        self.uncachedBackgroundWrites = uncachedBackgroundWrites
+        self.backgroundWriteRate = backgroundWriteRate
+        self.reissuesVerificationOnBoost = reissuesVerificationOnBoost
     }
 }
 
@@ -88,6 +111,17 @@ public actor InstallSession {
     /// For tests: the area being written, and the image's device.
     private(set) var stagingArea: StagingArea?
     private var device: UDIFDevice?
+    /// The latest progress, kept while `waitingToPrepare` hides it.
+    private var lastProgress = InstallProgress(bytesDone: 0, bytesTotal: 0)
+    /// Watches `options.conditions` while staging and the check run.
+    private var conditionsTask: Task<Void, Never>?
+    /// `run` waiting for the constraint to lift (or Install) before the signature check.
+    private var unconstrainedWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The signature check in flight and its QoS, so a boost can reissue it.
+    private var verification: (task: Task<Verdict, Never>, qos: DispatchQoS.QoSClass)?
+    private var reissueVerification = false
+    /// For tests: the QoS of every signature check started, in order.
+    private(set) var verificationQoS: [DispatchQoS.QoSClass] = []
 
     public init(dmg: URL, options: InstallOptions) {
         self.dmg = dmg
@@ -115,11 +149,16 @@ public actor InstallSession {
     /// Returns once the session settles: installed, failed, or waiting in `warning`.
     public func install() async {
         switch state {
-        case .preparing(let summary, let progress):
+        case .preparing(let summary, _), .waitingToPrepare(let summary):
             installRequested = true
             timings.boosted = elapsed()
             job.boost()
-            state = .installing(summary, progress)
+            state = .installing(summary, lastProgress)
+            wakeUnconstrainedWaiters()
+            if let verification, verification.qos != .userInitiated, options.reissuesVerificationOnBoost {
+                reissueVerification = true
+                verification.task.cancel()
+            }
             await runTask?.value
         case .ready, .warning:
             guard installTask == nil else { break }
@@ -137,6 +176,8 @@ public actor InstallSession {
     public func cancel() async {
         guard !state.isFinal else { return }
         stopFlag.set()
+        job.resume()
+        wakeUnconstrainedWaiters()
         answerLicence(false)
         runTask?.cancel()
         await runTask?.value
@@ -163,6 +204,9 @@ public actor InstallSession {
             let path = dmg.path
             opened = try await Self.onThread(qos: .utility) { try DMGReader.open(path: path) }
             timings.opened = elapsed()
+            // The catalog walk and the plist and icon reads decode chunks too: keep them to
+            // the gentle policy's smaller cache rather than the device's default.
+            if !isFast { opened.image.udif?.decodePolicy = options.backgroundDecodePolicy }
             if let licence = opened.image.licence {
                 state = .needsLicence(licence)
                 guard await waitForLicence() else { return finishCancelled() }
@@ -192,9 +236,13 @@ public actor InstallSession {
             Extractor.discard(prepared.area)
             return finishCancelled()
         }
-        let initialProgress = InstallProgress(bytesDone: 0, bytesTotal: summary.size)
-        state =
-            installRequested ? .installing(summary, initialProgress) : .preparing(summary, initialProgress)
+        lastProgress = InstallProgress(bytesDone: 0, bytesTotal: summary.size)
+        state = installRequested ? .installing(summary, lastProgress) : .preparing(summary, lastProgress)
+        watchConditions()
+        defer {
+            conditionsTask?.cancel()
+            conditionsTask = nil
+        }
 
         let staged: StagedApp
         do {
@@ -204,17 +252,19 @@ public actor InstallSession {
         }
         self.staged = staged
         timings.staged = elapsed()
+        await waitUntilUnconstrained()
         guard !stopFlag.isSet else { return finishCancelled() }
 
         // Staple before the check, so Gatekeeper's answer (and an offline first launch)
         // sees the ticket. Best effort: a failure only means macOS fetches it online.
         if let ticket = prepared.ticket {
             let url = staged.url
-            _ = try? await Self.onThread(qos: .utility) { try Verifier.staple(ticket, into: url) }
+            _ = try? await Self.onThread(qos: isFast ? .userInitiated : .utility) {
+                try Verifier.staple(ticket, into: url)
+            }
         }
 
-        let fast = installRequested || options.stagingPriority == .userInitiated
-        let verdict = await Verifier.verdict(app: staged.url, qos: fast ? .userInitiated : .utility)
+        let verdict = await verifyBoostable(staged.url)
         timings.verified = elapsed()
         guard !stopFlag.isSet, !Task.isCancelled else { return finishCancelled() }
 
@@ -232,7 +282,7 @@ public actor InstallSession {
 
         if options.skipFirstLaunchPrompt, verdict.allowsPreApproval {
             // On failure the app keeps plain quarantine: macOS shows its usual prompt.
-            _ = try? await Self.onThread(qos: .utility) { try Extractor.markApproved(staged) }
+            _ = try? await Self.onThread(qos: isFast ? .userInitiated : .utility) { try Extractor.markApproved(staged) }
         }
 
         switch verdict.decision {
@@ -247,6 +297,74 @@ public actor InstallSession {
             Extractor.discard(staged)
             state = .refused(summary, refusal)
         }
+    }
+
+    /// True once nothing should hold back: Install was clicked, or the session was made
+    /// to run at user-initiated priority from the start.
+    private var isFast: Bool { installRequested || options.stagingPriority == .userInitiated }
+
+    /// Runs the signature check at the session's current priority. If Install boosts the
+    /// session while a utility-QoS check runs, `install()` cancels it and this starts it
+    /// again at user-initiated (measured faster than waiting: `impact-bench.md`, round 2).
+    private func verifyBoostable(_ app: URL) async -> Verdict {
+        let verify = options.verify
+        while true {
+            let qos: DispatchQoS.QoSClass = isFast ? .userInitiated : .utility
+            let task = Task { await verify(app, qos) }
+            verification = (task, qos)
+            verificationQoS.append(qos)
+            let verdict = await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            verification = nil
+            guard reissueVerification, !stopFlag.isSet, !Task.isCancelled else { return verdict }
+            reissueVerification = false
+        }
+    }
+
+    // MARK: - Low Power Mode and thermal state
+
+    /// Starts following `options.conditions` for a background session, and applies the
+    /// current value at once.
+    private func watchConditions() {
+        guard !isFast else { return }
+        let conditions = options.conditions
+        applyConditions()
+        conditionsTask = Task { [weak self] in
+            for await _ in conditions.changes() {
+                guard let self else { return }
+                await self.applyConditions()
+            }
+        }
+    }
+
+    /// Pauses the job between files and shows `waitingToPrepare` while constrained;
+    /// resumes and goes back to `preparing` when not. Nothing once Install was clicked.
+    private func applyConditions() {
+        guard !isFast, !stopFlag.isSet else { return }
+        if options.conditions.isConstrained() {
+            job.pause()
+            if case .preparing(let summary, _) = state { state = .waitingToPrepare(summary) }
+        } else {
+            job.resume()
+            if case .waitingToPrepare(let summary) = state { state = .preparing(summary, lastProgress) }
+            wakeUnconstrainedWaiters()
+        }
+    }
+
+    /// Returns at once unless the job is paused; then waits for the constraint to lift,
+    /// Install or cancel.
+    private func waitUntilUnconstrained() async {
+        guard job.isPaused, !isFast, !stopFlag.isSet else { return }
+        await withCheckedContinuation { unconstrainedWaiters.append($0) }
+    }
+
+    private func wakeUnconstrainedWaiters() {
+        let waiters = unconstrainedWaiters
+        unconstrainedWaiters = []
+        for waiter in waiters { waiter.resume() }
     }
 
     /// The single top-level app, or nil after setting `cannotInstall`.
@@ -275,7 +393,8 @@ public actor InstallSession {
         let throttle = ProgressThrottle(steps: Self.progressSteps)
         let stageOptions = StageOptions(
             quarantine: quarantine, priority: options.stagingPriority, isCancelled: { stop.isSet }, job: job,
-            onBoost: { device?.decodePolicy = .fast })
+            onBoost: { device?.decodePolicy = .fast }, uncachedBackgroundWrites: options.uncachedBackgroundWrites,
+            backgroundWriteRate: options.backgroundWriteRate)
         let fileSystem = opened.fileSystem
         return try await Self.onThread(qos: background ? .background : .userInitiated) {
             try Extractor.stage(app: app, from: fileSystem, into: area, options: stageOptions) { progress in
@@ -287,6 +406,7 @@ public actor InstallSession {
 
     private func progressed(_ progress: StageProgress) {
         let next = InstallProgress(bytesDone: progress.bytesDone, bytesTotal: progress.bytesTotal)
+        if next.bytesDone > lastProgress.bytesDone { lastProgress = next }
         switch state {
         case .preparing(let summary, let current) where next.bytesDone > current.bytesDone:
             state = .preparing(summary, next)
@@ -360,15 +480,29 @@ public actor InstallSession {
     // MARK: - Helpers
 
     /// Runs blocking work on a thread of its own, so it never parks a cooperative thread.
-    /// The thread's QoS is fixed for its life (see `WorkerPriority` in the Extractor), which
-    /// is fine for the short calling-thread work `stage` does itself.
+    /// The QoS is set from inside the thread with `pthread_set_qos_class_self_np` rather than
+    /// `Thread.qualityOfService`, which fixes it for the thread's life: `Extractor.stage`
+    /// raises its calling thread on a boost (see `WorkerPriority` in the Extractor).
     static func onThread<T: Sendable>(
         qos: QualityOfService, _ body: @escaping @Sendable () throws -> T
     ) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            let thread = Thread { continuation.resume(with: Result { try body() }) }
-            thread.qualityOfService = qos
+        let qosClass = qosClass(qos)
+        return try await withCheckedThrowingContinuation { continuation in
+            let thread = Thread {
+                pthread_set_qos_class_self_np(qosClass, 0)
+                continuation.resume(with: Result { try body() })
+            }
             thread.start()
+        }
+    }
+
+    private static func qosClass(_ qos: QualityOfService) -> qos_class_t {
+        switch qos {
+        case .userInteractive: QOS_CLASS_USER_INTERACTIVE
+        case .userInitiated: QOS_CLASS_USER_INITIATED
+        case .utility: QOS_CLASS_UTILITY
+        case .background: QOS_CLASS_BACKGROUND
+        default: QOS_CLASS_DEFAULT
         }
     }
 

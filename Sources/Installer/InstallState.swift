@@ -8,8 +8,9 @@ import Verifier
 ///
 /// ```
 /// reading ─▶ needsLicence ─▶ preparing ─▶ ready ───────────▶ installing ─▶ installed
-///    │            │              │      ├▶ warning ──(install)─▶ installing
-///    │            │              │      └▶ refused
+///    │            │           ▲   │      ├▶ warning ──(install)─▶ installing
+///    │            │           ▼   │      └▶ refused
+///    │            │     waitingToPrepare ──(install)─▶ installing
 ///    ├▶ cannotInstall / needsMountFallback / failed (from reading or preparing)
 ///    └─ cancel() or decline() from any state before installed ─▶ cancelled
 /// ```
@@ -18,6 +19,9 @@ import Verifier
 /// speed, then the app moves into place), unless the verdict turns out to be a warning or a
 /// refusal: then the session stops at `warning` or `refused` and waits, because Install
 /// Anyway is a separate decision the user hasn't made yet.
+///
+/// `preparing` and `waitingToPrepare` swap as Low Power Mode or thermal pressure comes and
+/// goes (`InstallOptions.conditions`); both show the same panel with Install enabled.
 public enum InstallState: Sendable, Equatable {
     /// Opening the image and reading its catalog. Usually under 0.1 s.
     case reading
@@ -27,6 +31,12 @@ public enum InstallState: Sendable, Equatable {
     /// Staging and checking the app in the background. The summary already has the name,
     /// version, bundle ID, size and installed version; the signer fields fill in at `ready`.
     case preparing(AppSummary, InstallProgress)
+    /// Low Power Mode is on, or the Mac is hot (thermal state serious or worse): staging
+    /// waits, between files if it had begun, and nothing runs until the state clears
+    /// (back to `preparing`) or Install (to `installing`, at full speed). A separate state
+    /// rather than a flag on `preparing`, so a panel that binds to progress can't show a
+    /// bar that silently stops moving.
+    case waitingToPrepare(AppSummary)
     /// Notarized and intact: Install is a rename.
     case ready(AppSummary)
     /// "Apple hasn't checked this app": `install()` here is Install Anyway.
@@ -50,7 +60,7 @@ public enum InstallState: Sendable, Equatable {
     public var isFinal: Bool {
         switch self {
         case .installed, .cancelled, .failed, .refused, .cannotInstall, .needsMountFallback: true
-        case .reading, .needsLicence, .preparing, .ready, .warning, .installing: false
+        case .reading, .needsLicence, .preparing, .waitingToPrepare, .ready, .warning, .installing: false
         }
     }
 }

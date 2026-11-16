@@ -66,7 +66,7 @@ struct Scratch {
         if let mountFallback { hook = { _, reason in mountFallback.record(reason) } }
         return InstallOptions(
             destination: destination, backgroundDecodePolicy: policy.policy, skipFirstLaunchPrompt: skipPrompt,
-            trash: trashItem, mountFallback: hook)
+            trash: trashItem, mountFallback: hook, conditions: .unconstrained)
     }
 
     func trashed() -> [String] {
@@ -131,7 +131,9 @@ func exists(_ url: URL) -> Bool {
 extension InstallState {
     var summary: AppSummary? {
         switch self {
-        case .preparing(let s, _), .ready(let s), .warning(let s, _), .refused(let s, _), .installing(let s, _): s
+        case .preparing(let s, _), .waitingToPrepare(let s), .ready(let s), .warning(let s, _), .refused(let s, _),
+            .installing(let s, _):
+            s
         default: nil
         }
     }

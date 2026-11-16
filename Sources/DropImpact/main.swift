@@ -12,7 +12,11 @@ import Installer
 //   drop-impact cpu <seconds>                 hash 64 MB buffers on one thread per P-core
 //   drop-impact disk <file> <seconds>         read <file> uncached in 1 MB blocks
 //   drop-impact make-file <file> <GiB>        write the uncached test file once
-//   drop-impact stage <policy> <dest> [--boost-after <s>] <dmg>...
+//   drop-impact stage <policy> <dest> [--boost-after <s>] [--cached | --uncached] [--rate <MB/s>]
+//                     [--no-reissue] [--cache-mb <MiB>] <dmg>...
+//
+// `stage` samples its own `phys_footprint` every `footprintSampleInterval` and reports the
+// peak per phase (open and plan, staging, verification) for each DMG.
 //
 // Every timestamp is `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` in seconds, which is
 // system-wide, so the runner can line foreground samples up with Drop's staging window.
@@ -159,8 +163,54 @@ func ownUsage() -> [String: Any] {
     ]
 }
 
-func runStage(policyName: String, destination: URL, boostAfter: Double?, dmgs: [URL]) async {
-    let policy: DecodePolicy
+/// How often `stage` samples its footprint.
+let footprintSampleInterval = 0.01
+
+func physFootprint() -> UInt64 {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    return result == KERN_SUCCESS ? info.phys_footprint : 0
+}
+
+/// (time, footprint) samples from a thread of its own, at utility QoS.
+final class FootprintSampler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [(Double, UInt64)] = []
+    private var running = true
+
+    func start() {
+        let thread = Thread { [self] in
+            while lock.withLock({ running }) {
+                let sample = (now(), physFootprint())
+                lock.withLock { items.append(sample) }
+                Thread.sleep(forTimeInterval: footprintSampleInterval)
+            }
+        }
+        thread.qualityOfService = .utility
+        thread.start()
+    }
+
+    func stop() { lock.withLock { running = false } }
+
+    func peak(from start: Double, to end: Double) -> UInt64 {
+        lock.withLock { items.filter { $0.0 >= start && $0.0 <= end }.map(\.1).max() ?? 0 }
+    }
+}
+
+struct StageTuning {
+    var uncached = false
+    var rateMBps: Double?
+    var reissue = true
+    var cacheMB: Int?
+}
+
+func runStage(policyName: String, destination: URL, boostAfter: Double?, tuning: StageTuning, dmgs: [URL]) async {
+    var policy: DecodePolicy
     let priority: StageOptions.Priority
     switch policyName {
     case "background": (policy, priority) = (.background, .background)
@@ -168,13 +218,18 @@ func runStage(policyName: String, destination: URL, boostAfter: Double?, dmgs: [
     case "fast": (policy, priority) = (.fast, .userInitiated)
     default: fail("unknown policy \(policyName)")
     }
+    if let cacheMB = tuning.cacheMB { policy.cacheBytes = cacheMB << 20 }
     let trashed = destination.appending(path: "trash")
     try? FileManager.default.createDirectory(at: trashed, withIntermediateDirectories: true)
     let options = InstallOptions(
         destination: destination, stagingPriority: priority, backgroundDecodePolicy: policy,
         trash: { url in
             try FileManager.default.moveItem(at: url, to: trashed.appending(path: UUID().uuidString))
-        })
+        }, conditions: .unconstrained, uncachedBackgroundWrites: tuning.uncached,
+        backgroundWriteRate: tuning.rateMBps.map { Int($0 * bytesPerMB) }, reissuesVerificationOnBoost: tuning.reissue)
+    let sampler = FootprintSampler()
+    let idleFootprint = physFootprint()
+    sampler.start()
     let windowStart = now()
     for dmg in dmgs {
         let session = InstallSession(dmg: dmg, options: options)
@@ -201,9 +256,15 @@ func runStage(policyName: String, destination: URL, boostAfter: Double?, dmgs: [
         if let staged = timings.staged, let begun = timings.stagingStarted { record["stageSeconds"] = staged - begun }
         if let verified = timings.verified, let staged = timings.staged { record["verifySeconds"] = verified - staged }
         if let boostedAt { record["boostToReady"] = readyAt - boostedAt }
+        let at = { (offset: Double?) in offset.map { started + $0 } ?? readyAt }
+        record["peakOpen"] = sampler.peak(from: started, to: at(timings.stagingStarted))
+        record["peakStage"] = sampler.peak(from: at(timings.stagingStarted), to: at(timings.staged))
+        record["peakVerify"] = sampler.peak(from: at(timings.staged), to: readyAt)
         emit(record)
     }
+    sampler.stop()
     var summary = ownUsage()
+    summary["idleFootprint"] = idleFootprint
     summary["kind"] = "usage"
     summary["windowStart"] = windowStart
     summary["windowEnd"] = now()
@@ -233,13 +294,31 @@ case "stage":
     guard arguments.count >= 4 else { fail("stage <policy> <dest> [--boost-after s] <dmg>...") }
     var rest = Array(arguments.dropFirst(3))
     var boostAfter: Double?
-    if rest.first == "--boost-after", rest.count >= 3, let value = Double(rest[1]) {
-        boostAfter = value
-        rest.removeFirst(2)
+    var tuning = StageTuning()
+    while let flag = rest.first, flag.hasPrefix("--") {
+        rest.removeFirst()
+        switch flag {
+        case "--boost-after":
+            guard let value = rest.first.flatMap(Double.init) else { fail("--boost-after <s>") }
+            boostAfter = value
+            rest.removeFirst()
+        case "--rate":
+            guard let value = rest.first.flatMap(Double.init), value > 0 else { fail("--rate <MB/s>") }
+            tuning.rateMBps = value
+            rest.removeFirst()
+        case "--cached": tuning.uncached = false
+        case "--uncached": tuning.uncached = true
+        case "--no-reissue": tuning.reissue = false
+        case "--cache-mb":
+            guard let value = rest.first.flatMap(Int.init), value > 0 else { fail("--cache-mb <MiB>") }
+            tuning.cacheMB = value
+            rest.removeFirst()
+        default: fail("unknown flag \(flag)")
+        }
     }
     await runStage(
         policyName: arguments[1], destination: URL(fileURLWithPath: arguments[2]), boostAfter: boostAfter,
-        dmgs: rest.map { URL(fileURLWithPath: $0) })
+        tuning: tuning, dmgs: rest.map { URL(fileURLWithPath: $0) })
 default:
     fail("unknown mode \(mode)")
 }

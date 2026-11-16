@@ -21,6 +21,8 @@ final class Writer: Sendable {
     private let nextFile = Atomic<Int>(0)
     private let bytesDone = Atomic<UInt64>(0)
     private let failure = Mutex<(any Error)?>(nil)
+    /// Paces background writes; nil when unpaced or not a background stage.
+    private let pacer: WritePacer?
 
     /// Only the permission bits a staged item may keep: setuid, setgid and sticky are dropped.
     static let permissionMask: UInt16 = 0o777
@@ -37,6 +39,12 @@ final class Writer: Sendable {
         "com.apple.decmpfs",
     ]
     static let skippedXattrPrefix = "com.apple.system."
+    /// Longest single sleep while pacing, so a boost or cancel mid-sleep takes effect soon.
+    static let pacingSliceSeconds = 0.02
+    static let nanosecondsPerSecond = 1e9
+    /// Worker buffers are page-aligned: uncached (`F_NOCACHE`) writes from an aligned
+    /// buffer go straight to the device instead of through a bounce copy.
+    static let bufferAlignment = Int(sysconf(Int32(_SC_PAGESIZE)))
 
     init(
         fileSystem: any FileSystem, rootFD: Int32, quarantine: String?, options: StageOptions,
@@ -48,26 +56,39 @@ final class Writer: Sendable {
         self.options = options
         self.totalBytes = totalBytes
         self.progress = progress
+        if options.priority == .background, let rate = options.backgroundWriteRate {
+            // One buffer per worker of burst: enough to absorb a late wake-up without
+            // letting a burst after an idle spell exceed what the workers hold anyway.
+            pacer = WritePacer(bytesPerSecond: rate, burstBytes: options.bufferSize * max(1, options.workerCount))
+        } else {
+            pacer = nil
+        }
     }
 
     func write(_ plan: StagePlan) throws {
         options.job.attach(options.onBoost)
         defer { options.job.detach() }
+        // The calling thread does the folders, symlinks and final pass, which for apps with
+        // thousands of folders (GIMP) is most of the time after a boost. It switches QoS
+        // like a worker does, then gets its own QoS back.
+        let callerQoS = qos_class_self()
+        var priority = WorkerPriority(job: options.job, background: isBackground)
+        defer { pthread_set_qos_class_self_np(callerQoS, 0) }
 
         for item in plan.directories {
-            try checkCancelled()
+            try between(&priority)
             try call("mkdirat", item.path) { mkdirat(rootFD, $0, Self.directoryCreateMode) }
             let fd = try openItem(item.path, flags: O_RDONLY | O_DIRECTORY)
             defer { close(fd) }
             try applyXattrs(of: item, to: fd)
         }
         for (item, target) in plan.symlinks {
-            try checkCancelled()
+            try between(&priority)
             try writeSymlink(item, target: target)
         }
         try writeFilesInParallel(plan.files)
         for link in plan.links {
-            try checkCancelled()
+            try between(&priority)
             let result = link.existing.withCString { existing in
                 link.new.withCString { linkat(rootFD, existing, rootFD, $0, 0) }
             }
@@ -76,6 +97,7 @@ final class Writer: Sendable {
         // Deepest first: a folder's own times and read-only mode go on after everything
         // inside it is written, or the writes would fail or bump its mtime.
         for item in plan.directories.sorted(by: { $0.depth > $1.depth }) {
+            priority.update()
             let fd = try openItem(item.path, flags: O_RDONLY | O_DIRECTORY)
             defer { close(fd) }
             try finish(item, fd: fd)
@@ -116,7 +138,8 @@ final class Writer: Sendable {
 
     private func runWorker(_ files: [PlannedItem]) {
         var priority = WorkerPriority(job: options.job, background: isBackground)
-        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: options.bufferSize, alignment: 16)
+        let buffer = UnsafeMutableRawBufferPointer.allocate(
+            byteCount: options.bufferSize, alignment: Self.bufferAlignment)
         defer { buffer.deallocate() }
         while failure.withLock({ $0 == nil }) {
             let index = nextFile.add(1, ordering: .relaxed).oldValue
@@ -133,14 +156,18 @@ final class Writer: Sendable {
     private func writeFile(
         _ item: PlannedItem, buffer: UnsafeMutableRawBufferPointer, priority: inout WorkerPriority
     ) throws {
-        priority.update()
-        try checkCancelled()
+        try between(&priority)
         let entry = item.entry
         let mode = entry.mode & Self.permissionMask
         let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW_ANY | O_CLOEXEC
         let fd = item.path.withCString { openat(rootFD, $0, flags, mode_t(mode | Self.ownerWrite)) }
         guard fd >= 0 else { throw ExtractorError.io(errno: errno, operation: "create", path: item.path) }
         defer { close(fd) }
+        var uncached = false
+        if !priority.isFast, options.uncachedBackgroundWrites {
+            uncached = fcntl(fd, F_NOCACHE, 1) == 0
+            options.noCacheHook?(item.path, uncached)
+        }
 
         var written: UInt64 = 0
         var position: UInt64 = 0
@@ -158,8 +185,13 @@ final class Writer: Sendable {
                 // Per buffer, not only per file: one big file (Docker's are hundreds of
                 // MB) shouldn't stay throttled after Install.
                 priority.update()
+                if uncached, priority.isFast {
+                    uncached = !(fcntl(fd, F_NOCACHE, 0) == 0)
+                    options.noCacheHook?(item.path, uncached)
+                }
                 try checkCancelled()
                 let count = Int(min(UInt64(buffer.count), end - offset))
+                if !priority.isFast, let pacer { try pace(count, with: pacer, priority: &priority) }
                 let window = UnsafeMutableRawBufferPointer(rebasing: buffer[0..<count])
                 try fileSystem.device.read(at: extent.deviceOffset + (offset - extent.fileOffset), into: window)
                 try writeAll(fd, UnsafeRawBufferPointer(window), at: offset, path: item.path)
@@ -290,6 +322,35 @@ final class Writer: Sendable {
     static func split(_ path: String) -> (parent: String, name: String) {
         guard let slash = path.utf8.lastIndex(of: UInt8(ascii: "/")) else { return (".", path) }
         return (String(path[..<slash]), String(path[path.index(after: slash)...]))
+    }
+
+    /// Between two items: switch QoS if boosted, hold while paused, stop if cancelled.
+    private func between(_ priority: inout WorkerPriority) throws {
+        priority.update()
+        if options.job.isPaused { options.job.waitWhilePaused(isCancelled: options.isCancelled) }
+        priority.update()
+        try checkCancelled()
+    }
+
+    /// Sleeps off `bytes` worth of the pacer's rate, in short slices so a boost or cancel
+    /// cuts the wait short.
+    ///
+    /// Sleeps to a deadline on the clock rather than adding up slices: background-QoS
+    /// timers get coalesced and wake late, and counting nominal slices let that lateness
+    /// pile up (a 200 MB/s pace measured about 120 MB/s).
+    private func pace(_ bytes: Int, with pacer: WritePacer, priority: inout WorkerPriority) throws {
+        let wait = pacer.reserve(bytes)
+        guard wait > 0 else { return }
+        let deadline = WritePacer.now() &+ UInt64(wait * Self.nanosecondsPerSecond)
+        while true {
+            let now = WritePacer.now()
+            guard now < deadline else { return }
+            Thread.sleep(
+                forTimeInterval: min(Double(deadline - now) / Self.nanosecondsPerSecond, Self.pacingSliceSeconds))
+            priority.update()
+            if priority.isFast { return }
+            try checkCancelled()
+        }
     }
 
     private func checkCancelled() throws {

@@ -94,10 +94,25 @@ extension Verifier {
     ///
     /// Skips the assessment when the signature is damaged or absent (Gatekeeper would only
     /// repeat the answer). Typical cost is dominated by `validate`; see the timing test.
+    ///
+    /// At `.userInitiated` (someone is waiting on Install) the two run side by side, since
+    /// syspolicyd hashes the bundle again on its own: about 40% off the wait for big apps
+    /// (`impact-bench.md`, round 2). The assessment is dropped, and cancelled, when the
+    /// signature turns out not to be valid. At lower QoS they stay one after the other,
+    /// so background checking never doubles its disk and CPU use.
     public static func verdict(
         app: URL, validationTimeout: Duration = defaultValidationTimeout,
         assessmentTimeout: Duration = defaultAssessmentTimeout, qos: DispatchQoS.QoSClass = .utility
     ) async -> Verdict {
+        if qos == .userInitiated || qos == .userInteractive {
+            async let parallelAssessment = assess(app: app, timeout: assessmentTimeout, qos: qos)
+            let validity = await validate(app: app, timeout: validationTimeout, qos: qos)
+            let signing = try? signingInfo(app: app)
+            // Leaving the scope without awaiting cancels the assessment and waits for it,
+            // which returns at once on cancellation (see `BoundedRun.async`).
+            guard validity == .valid else { return Verdict(signing: signing, validity: validity, assessment: nil) }
+            return Verdict(signing: signing, validity: validity, assessment: await parallelAssessment)
+        }
         let validity = await validate(app: app, timeout: validationTimeout, qos: qos)
         let signing = try? signingInfo(app: app)
         let assessment: AssessmentResult? =

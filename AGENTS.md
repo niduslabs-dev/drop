@@ -12,7 +12,7 @@ A Swift package (`Package.swift`), no Xcode project yet:
 - `DMGReader`: opens a `.dmg` and returns its filesystem. `dmg-inspect`: a CLI over it.
 - `Extractor`: stages an app out of a `FileSystem` (4 workers, POSIX writes, xattrs, quarantine with the do-not-translocate flag) and installs it by rename or atomic swap.
 - `Verifier`: signing info, strict validation, Gatekeeper assessment, the `Verdict` the panel shows, same-developer check, and stapling a DMG's ticket into an app. Use the `async` overloads from tasks; the sync ones stall under Swift concurrency.
-- `Installer`: `InstallSession`, the actor the app drives per DMG: reading → licence → background staging and check → ready/warning/refused → install. States in `InstallState.swift`.
+- `Installer`: `InstallSession`, the actor the app drives per DMG: reading → licence → background staging and check → ready/warning/refused → install. States in `InstallState.swift`. In Low Power Mode or at a serious thermal state it waits in `waitingToPrepare` (`StagingConditions`, injectable). Install boosts staging, its calling thread and the signature check (cancelled and reissued at user-initiated).
 - `drop-impact`: the background-impact benchmark's load and staging processes, run by `.claude/research/scripts/impact_bench.py` (results in `.claude/research/impact-bench.md`).
 
 ## Commands

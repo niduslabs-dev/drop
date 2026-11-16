@@ -17,6 +17,11 @@ public struct DecodePolicy: Sendable, Hashable {
     /// How many decoded bytes to prepare ahead of each sequential reader. 0 turns
     /// read-ahead off; a read that spans several chunks still decodes them in parallel.
     public var readAheadBytes: Int
+    /// Most decoded bytes the device keeps, if less than its own `cacheLimit`; nil uses
+    /// the device's. Background staging keeps less: the cache was the largest single
+    /// share of Drop's footprint (`impact-bench.md`, round 2). Shrinking trims at once;
+    /// growing again (the boost to `fast`) lets the cache refill as reads come.
+    public var cacheBytes: Int?
 
     /// One core left for the reader and the writer threads.
     public static let defaultMaxDecoders = max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
@@ -27,24 +32,36 @@ public struct DecodePolicy: Sendable, Hashable {
     /// Enough to keep every decoder busy on 1 MiB chunks and most of them on 4 MiB ones,
     /// while staying inside the read-ahead share of the 64 MiB cache.
     public static let defaultReadAheadBytes = 32 * 1024 * 1024
+    /// Read-ahead for the gentle presets. Background staging isn't racing anyone, and its
+    /// writers are throttled, so 8 MiB (2 to 8 chunks) keeps its 2–3 decoders busy while
+    /// holding a quarter of the memory `fast` does (`impact-bench.md`, round 2).
+    public static let backgroundReadAheadBytes = 8 * 1024 * 1024
+    /// Decoded-chunk cache for the gentle presets: half the device default. Still four
+    /// times the read-ahead, so each of the 4 writer streams keeps its 8 MiB ahead.
+    public static let backgroundCacheBytes = 32 * 1024 * 1024
 
     /// All cores but one, user-initiated: for Install and anything a person waits on.
     public static let fast = DecodePolicy(
         maxDecoders: defaultMaxDecoders, qos: .userInitiated, readAheadBytes: defaultReadAheadBytes)
     /// Two decoders at background QoS, with their disk reads throttled.
     public static let background = DecodePolicy(
-        maxDecoders: backgroundMaxDecoders, qos: .background, readAheadBytes: defaultReadAheadBytes)
-    /// Three decoders at utility QoS: a candidate for background staging that may run on
-    /// performance cores (background QoS stays on efficiency cores) but still yields to
-    /// user-initiated work. Its disk reads get utility QoS's I/O tier, not an explicit
-    /// throttle. Compared with `background` in `.claude/research/impact-bench.md`.
+        maxDecoders: backgroundMaxDecoders, qos: .background, readAheadBytes: backgroundReadAheadBytes,
+        cacheBytes: backgroundCacheBytes)
+    /// Three decoders at utility QoS: the default for background staging. They may run on
+    /// performance cores (background QoS stays on efficiency cores) but still yield to
+    /// user-initiated work; the foreground showed no measurable slowdown, and Docker is
+    /// ready 4× sooner than under `background` with half the CPU time
+    /// (`.claude/research/impact-bench.md`). Its disk reads get utility QoS's I/O tier,
+    /// not an explicit throttle.
     public static let utility = DecodePolicy(
-        maxDecoders: utilityMaxDecoders, qos: .utility, readAheadBytes: defaultReadAheadBytes)
+        maxDecoders: utilityMaxDecoders, qos: .utility, readAheadBytes: backgroundReadAheadBytes,
+        cacheBytes: backgroundCacheBytes)
 
-    public init(maxDecoders: Int, qos: DispatchQoS.QoSClass, readAheadBytes: Int) {
+    public init(maxDecoders: Int, qos: DispatchQoS.QoSClass, readAheadBytes: Int, cacheBytes: Int? = nil) {
         self.maxDecoders = max(1, maxDecoders)
         self.qos = qos
         self.readAheadBytes = max(0, readAheadBytes)
+        self.cacheBytes = cacheBytes.map { max(0, $0) }
     }
 }
 
@@ -150,6 +167,7 @@ final class DecodeScheduler: @unchecked Sendable {
         set {
             locked {
                 policy = newValue
+                trimLRU()
                 pump()
             }
         }
@@ -261,7 +279,7 @@ final class DecodeScheduler: @unchecked Sendable {
     /// or the shared budget is full. When it is full, frees the budget of a stream that
     /// hasn't read since this one last did (it went idle), then tries once more.
     private func readAhead(after last: Int, owner: Int, previousUse: UInt64) {
-        let budget = cacheLimit / Self.readAheadShareDivisor
+        let budget = limit / Self.readAheadShareDivisor
         var covered = 0
         var index = last + 1
         var freedIdle = false
@@ -336,7 +354,10 @@ final class DecodeScheduler: @unchecked Sendable {
         trimLRU()
     }
 
-    private func trimLRU() { lru.trim(to: max(0, cacheLimit - reservedBytes)) }
+    /// The cache budget under the current policy.
+    private var limit: Int { min(cacheLimit, policy.cacheBytes ?? cacheLimit) }
+
+    private func trimLRU() { lru.trim(to: max(0, limit - reservedBytes)) }
 
     /// Starts workers for queued chunks while decoder slots are free.
     private func pump() {
