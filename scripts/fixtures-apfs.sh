@@ -16,6 +16,7 @@
 # converted to UDTO and attached read-only to record the manifest. Every attach is
 # detached by its device node.
 set -euo pipefail
+. "$(dirname "$0")/lib/hdi.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.build/fixtures/apfs"
@@ -36,7 +37,7 @@ trap detach_all EXIT
 attach() {
     local image="$1"; shift
     local plist dev mnt
-    plist="$(hdiutil attach "$image" -nobrowse -noautoopen -mountrandom "$WORK" -plist "$@")"
+    plist="$(hdi_attach "$image" -nobrowse -noautoopen -mountrandom "$WORK" -plist "$@")"
     dev="$(printf '%s' "$plist" | python3 -I -c 'import plistlib,sys
 e=[x for x in plistlib.loads(sys.stdin.buffer.read())["system-entities"] if "mount-point" in x]
 print(e[0]["dev-entry"], e[0]["mount-point"])')"
@@ -44,7 +45,7 @@ print(e[0]["dev-entry"], e[0]["mount-point"])')"
 }
 
 detach() {
-    hdiutil detach "$1" >/dev/null
+    hdi detach "$1"
     local remaining=()
     for d in "${ATTACHED[@]:-}"; do [ "$d" != "$1" ] && [ -n "$d" ] && remaining+=("$d"); done
     ATTACHED=("${remaining[@]:-}")
@@ -187,12 +188,12 @@ build_image() {
     local variant="$1" fs="$2"
     local rw="$WORK/$variant-rw.dmg" img="$OUT/$variant.img"
     rm -f "$rw" "$img" "$OUT/$variant.img.cdr"
-    hdiutil create -quiet -fs "$fs" -layout NONE -format UDRW -srcfolder "$SRC" -volname "$VOLNAME" "$rw" 2>/dev/null
+    hdi_create -fs "$fs" -layout NONE -format UDRW -srcfolder "$SRC" -volname "$VOLNAME" "$rw"
     local info dev mnt
     info="$(attach "$rw")"; dev="${info%% *}"; mnt="${info#* }"; ATTACHED+=("$dev")
     edit_image "$mnt" "$variant"
     detach "$dev"
-    hdiutil convert -quiet "$rw" -format UDTO -o "$img"
+    hdi convert "$rw" -format UDTO -o "$img"
     [ -f "$img.cdr" ] && mv "$img.cdr" "$img"
     info="$(attach "$img" -readonly)"; dev="${info%% *}"; mnt="${info#* }"; ATTACHED+=("$dev")
     manifest "$mnt" "$OUT/$variant-manifest.jsonl"

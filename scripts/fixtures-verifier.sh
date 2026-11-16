@@ -13,6 +13,7 @@
 # Never uses a signing identity or the keychain. Mounts read-only, -nobrowse, and detaches
 # by device node; a DMG that is missing is skipped with a note.
 set -euo pipefail
+. "$(dirname "$0")/lib/hdi.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.build/fixtures/verifier"
@@ -59,7 +60,7 @@ for source in "${SOURCES[@]}"; do
         echo "skip $name: $dmg missing"
         continue
     fi
-    plist="$(hdiutil attach "$dmg" -nobrowse -readonly -noverify -noautoopen -mountrandom "$MNT" -plist 2>/dev/null)"
+    plist="$(hdi_attach "$dmg" -nobrowse -readonly -noverify -noautoopen -mountrandom "$MNT" -plist)"
     # The whole-disk node is the first dev-entry; detaching it detaches every slice.
     dev="$(printf '%s' "$plist" | plutil -extract system-entities.0.dev-entry raw -o - -)"
     mnt="$(printf '%s' "$plist" | grep -A1 '<key>mount-point</key>' | sed -n 's:.*<string>\(.*\)</string>.*:\1:p' | head -1)"
@@ -72,7 +73,7 @@ for source in "${SOURCES[@]}"; do
         codesign -dv "$REAL/$name.app" >"$REAL/$name.codesign" 2>&1 || true
         echo "copied $name"
     fi
-    hdiutil detach "$dev" >/dev/null 2>&1
+    hdi detach "$dev"
     if hdiutil info | grep -q "^$dev[[:space:]]"; then
         echo "error: $dev still attached" >&2
         exit 1

@@ -9,6 +9,7 @@
 #   two-apps.dmg    AdHoc.app and Unsigned.app side by side
 #   no-app.dmg      only a text file
 set -euo pipefail
+. "$(dirname "$0")/lib/hdi.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYN="$ROOT/.build/fixtures/verifier/synthetic"
@@ -20,7 +21,7 @@ mkdir -p "$OUT/src"
 
 make_dmg() {
     local name="$1" folder="$2"
-    hdiutil create -quiet -fs HFS+ -format UDZO -volname "$name" -srcfolder "$folder" "$OUT/$name.dmg"
+    hdi_create -fs HFS+ -format UDZO -volname "$name" -srcfolder "$folder" "$OUT/$name.dmg"
 }
 
 src="$OUT/src/one-app"; mkdir -p "$src"

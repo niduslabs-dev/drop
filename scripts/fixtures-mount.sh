@@ -13,6 +13,7 @@
 #
 # Mounts only the read-write image it just created, -nobrowse, and detaches it by device node.
 set -euo pipefail
+. "$(dirname "$0")/lib/hdi.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYN="$ROOT/.build/fixtures/verifier/synthetic"
@@ -35,15 +36,15 @@ mkdir -p "$OUT/source" "$MNT"
 src="$OUT/source"
 ditto "$SYN/AdHoc.app" "$src/Tiny.app"
 
-printf '%s' "$THROWAWAY_PASSWORD" | hdiutil create -quiet -fs HFS+ -format UDZO -encryption AES-256 -stdinpass \
+HDI_STDIN="$THROWAWAY_PASSWORD" hdi_create -fs HFS+ -format UDZO -encryption AES-256 -stdinpass \
     -volname Encrypted -srcfolder "$src" "$OUT/encrypted.dmg"
-hdiutil create -quiet -fs HFS+ -format UDSP -volname Sparse -srcfolder "$src" "$OUT/sparse.sparseimage"
-hdiutil create -quiet -fs HFS+ -format UDSB -volname Bundle -srcfolder "$src" "$OUT/bundle.sparsebundle"
+hdi_create -fs HFS+ -format UDSP -volname Sparse -srcfolder "$src" "$OUT/sparse.sparseimage"
+hdi_create -fs HFS+ -format UDSB -volname Bundle -srcfolder "$src" "$OUT/bundle.sparsebundle"
 
 # decmpfs: hdiutil -srcfolder doesn't keep compression, so ditto writes the app onto the
 # mounted read-write image itself.
-hdiutil create -quiet -fs HFS+ -type UDIF -size 16m -volname Compressed "$OUT/compressed-rw.dmg"
-plist="$(hdiutil attach -nobrowse -noautoopen -noverify -mountrandom "$MNT" -plist "$OUT/compressed-rw.dmg")"
+hdi_create -fs HFS+ -type UDIF -size 16m -volname Compressed "$OUT/compressed-rw.dmg"
+plist="$(hdi_attach -nobrowse -noautoopen -noverify -mountrandom "$MNT" -plist "$OUT/compressed-rw.dmg")"
 dev="$(printf '%s' "$plist" | plutil -extract system-entities.0.dev-entry raw -)"
 mnt="$(printf '%s' "$plist" | grep -A1 '<key>mount-point</key>' | sed -n 's:.*<string>\(.*\)</string>.*:\1:p' | head -1)"
 ditto --hfsCompression "$src/Tiny.app" "$mnt/Tiny.app"
@@ -52,12 +53,12 @@ if ! ls -lOR "$mnt/Tiny.app" | grep -q compressed; then
     exit 1
 fi
 sync
-hdiutil detach -quiet "$dev"
-hdiutil convert -quiet "$OUT/compressed-rw.dmg" -format UDZO -o "$OUT/compressed.dmg"
+hdi detach "$dev"
+hdi convert "$OUT/compressed-rw.dmg" -format UDZO -o "$OUT/compressed.dmg"
 rm -f "$OUT/compressed-rw.dmg"
 
 # A licence agreement: LPic (one language, region 0, resource 5000), its TEXT and STR#.
-hdiutil create -quiet -fs HFS+ -format UDZO -volname Licence -srcfolder "$src" "$OUT/licence.dmg"
+hdi_create -fs HFS+ -format UDZO -volname Licence -srcfolder "$src" "$OUT/licence.dmg"
 python3 -I - "$OUT/licence.plist" <<'PY'
 import plistlib, sys
 def pascal(s):
@@ -75,7 +76,7 @@ with open(sys.argv[1], "wb") as f:
     plistlib.dump(resources, f)
 PY
 # udifrez takes the image before its options on macOS 27 (deprecated, still works).
-hdiutil udifrez "$OUT/licence.dmg" -xml "$OUT/licence.plist" >/dev/null 2>&1
+hdi udifrez "$OUT/licence.dmg" -xml "$OUT/licence.plist"
 rm -f "$OUT/licence.plist"
 
 rmdir "$MNT"

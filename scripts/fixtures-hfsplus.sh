@@ -10,6 +10,7 @@
 #
 # Mounts only to build and verify, always -nobrowse, and detaches by device node.
 set -euo pipefail
+. "$(dirname "$0")/lib/hdi.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.build/fixtures/hfsplus"
@@ -35,7 +36,7 @@ attach() {
     [ "$2" = ro ] && flags+=(-readonly)
     mkdir -p "$OUT/mnt"
     local line
-    line="$(hdiutil attach "$1" "${flags[@]}" 2>/dev/null | grep -E '/dev/disk[0-9]+' | grep -E 'Apple_HFS|/' | tail -1)"
+    line="$(hdi_attach "$1" "${flags[@]}" | grep -E '/dev/disk[0-9]+' | grep -E 'Apple_HFS|/' | tail -1)"
     local dev mnt
     dev="$(echo "$line" | awk '{print $1}')"
     mnt="$(echo "$line" | sed -E 's/^[^\t]*\t[^\t]*\t//; s/^[[:space:]]+//')"
@@ -43,7 +44,7 @@ attach() {
 }
 
 detach() {
-    hdiutil detach "$1" >/dev/null 2>&1
+    hdi detach "$1"
     if hdiutil info | grep -q "^$1[[:space:]]"; then
         echo "error: $1 still attached" >&2
         exit 1
@@ -202,7 +203,7 @@ add_compressed() {
 }
 
 # ---------------------------------------------------------------- HFSX (case-sensitive)
-hdiutil create -quiet -layout NONE -fs "Case-sensitive HFS+" -format UDRW -size 64m -volname "$VOLNAME" \
+hdi_create -layout NONE -fs "Case-sensitive HFS+" -format UDRW -size 64m -volname "$VOLNAME" \
     -srcfolder "$STAGE" "$OUT/hfsx-rw.dmg"
 IFS='|' read -r dev mnt <<<"$(attach "$OUT/hfsx-rw.dmg" rw)"
 mkdir "$mnt/case"
@@ -212,11 +213,11 @@ printf 'mixed\n' >"$mnt/case/ReadMe.txt"
 add_compressed "$mnt"
 sync
 detach "$dev"
-hdiutil convert -quiet "$OUT/hfsx-rw.dmg" -format UDTO -o "$OUT/hfsx"
+hdi convert "$OUT/hfsx-rw.dmg" -format UDTO -o "$OUT/hfsx"
 rm "$OUT/hfsx-rw.dmg"
 
 # ---------------------------------------------------------------- HFS+ (with fragmentation)
-hdiutil create -quiet -layout NONE -fs HFS+ -format UDRW -size 64m -volname "$VOLNAME" \
+hdi_create -layout NONE -fs HFS+ -format UDRW -size 64m -volname "$VOLNAME" \
     -srcfolder "$STAGE" "$OUT/hfsplus-rw.dmg"
 IFS='|' read -r dev mnt <<<"$(attach "$OUT/hfsplus-rw.dmg" rw)"
 mkdir "$mnt/frag"
@@ -241,7 +242,7 @@ os.close(out)
 PY
 sync
 detach "$dev"
-hdiutil convert -quiet "$OUT/hfsplus-rw.dmg" -format UDTO -o "$OUT/hfsplus"
+hdi convert "$OUT/hfsplus-rw.dmg" -format UDTO -o "$OUT/hfsplus"
 rm "$OUT/hfsplus-rw.dmg"
 
 # ---------------------------------------------------------------- manifests

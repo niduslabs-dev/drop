@@ -12,6 +12,7 @@
 #
 # Usage: scripts/fixtures-diskimage.sh
 set -euo pipefail
+. "$(dirname "$0")/lib/hdi.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.build/fixtures/diskimage"
@@ -36,33 +37,33 @@ for fs in "${FILESYSTEMS[@]}"; do
         # hdiutil refuses APFS on an Apple Partition Map ("Invalid argument").
         [ "$fs" = APFS ] && [ "$layout" = SPUD ] && continue
         base="$OUT/$(fs_tag "$fs")-$layout"
-        hdiutil create -quiet -srcfolder "$SRC" -volname DropFixture -fs "$fs" \
-            -layout "$layout" -format UDRW -ov "$base-master.dmg"
+        hdi_create -srcfolder "$SRC" -volname DropFixture -fs "$fs" \
+            -layout "$layout" -format UDRW "$base-master.dmg"
         for format in "${FORMATS[@]}"; do
             image="$base-$format.dmg"
             # UDTO writes `<name>.cdr`; keep the .dmg name so tests find every format alike.
-            hdiutil convert -quiet "$base-master.dmg" -format "$format" -ov -o "$image"
+            hdi convert "$base-master.dmg" -format "$format" -ov -o "$image"
             [ -f "$image.cdr" ] && mv "$image.cdr" "$image"
-            hdiutil convert -quiet "$image" -format UDTO -ov -o "$image.ref"
+            hdi convert "$image" -format UDTO -ov -o "$image.ref"
             mv "$image.ref.cdr" "$image.cdr"
         done
         rm -f "$base-master.dmg"
     done
 done
 
-printf '%s' "$THROWAWAY_PASSWORD" | hdiutil create -quiet -srcfolder "$SRC" -fs HFS+ \
-    -format UDZO -encryption AES-128 -stdinpass -ov "$OUT/encrypted.dmg"
-hdiutil create -quiet -size 8m -fs HFS+ -volname DropSparse -type SPARSE -ov "$OUT/sparse"
+HDI_STDIN="$THROWAWAY_PASSWORD" hdi_create -srcfolder "$SRC" -fs HFS+ \
+    -format UDZO -encryption AES-128 -stdinpass "$OUT/encrypted.dmg"
+hdi_create -size 8m -fs HFS+ -volname DropSparse -type SPARSE "$OUT/sparse"
 cp "$OUT/hfs-GPTSPUD-UDZO.dmg" "$OUT/signed.dmg"
 codesign -s - "$OUT/signed.dmg"
 
 # One read-only mount to confirm the fixture holds the source folder.
-plist="$(hdiutil attach -nobrowse -readonly -noautoopen -mountrandom "$OUT" -plist "$OUT/hfs-GPTSPUD-UDZO.dmg")"
+plist="$(hdi_attach -nobrowse -readonly -noautoopen -mountrandom "$OUT" -plist "$OUT/hfs-GPTSPUD-UDZO.dmg")"
 device="$(printf '%s' "$plist" | plutil -extract system-entities.0.dev-entry raw -)"
 mount_point="$(printf '%s' "$plist" | grep -A1 '<key>mount-point</key>' | sed -n 's:.*<string>\(.*\)</string>.*:\1:p' | head -1)"
 status=0
 cmp -s "$SRC/random.bin" "$mount_point/random.bin" || status=1
-hdiutil detach -quiet "$device"
+hdi detach "$device"
 if hdiutil info | grep -q "$OUT"; then
     echo "fixture image still attached; detach it by hand" >&2
     exit 1
