@@ -4,7 +4,7 @@
 # (SUFeedURL). Drop only ever needs the newest item, so the feed holds just that one.
 #
 # Usage: scripts/appcast.sh <version> <build> <dmg> <ed-signature> <notes.md> [download-url]
-#   version       CFBundleShortVersionString, shown to people ("0.9.0")
+#   version       CFBundleShortVersionString, shown to people ("1.0.0")
 #   build         CFBundleVersion, what Sparkle compares
 #   dmg           the signed, notarized DMG (for its length)
 #   ed-signature  `sign_update -p` output for the DMG

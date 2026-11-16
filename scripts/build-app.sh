@@ -7,7 +7,7 @@
 #        scripts/build-app.sh --debug    debug build (has --demo for screenshots)
 #
 # Environment (all optional):
-#   VERSION             CFBundleShortVersionString (default 0.9.0)
+#   VERSION             CFBundleShortVersionString (default 1.0.0)
 #   BUILD               CFBundleVersion, what Sparkle compares (default: VERSION)
 #   SIGN_IDENTITY       codesign identity (default "-", ad hoc, no keychain); a real identity
 #                       also gets a secure timestamp
@@ -25,7 +25,7 @@ BUNDLE_ID=dev.niduslabs.drop
 DISPLAY_NAME=Drop
 if [ "$CONFIG" = debug ]; then BUNDLE_ID=dev.niduslabs.drop.debug; DISPLAY_NAME="Drop (Debug)"; fi
 
-VERSION=${VERSION:-0.9.0}
+VERSION=${VERSION:-1.0.0}
 BUILD_NUMBER=${BUILD:-$VERSION}
 SIGN_IDENTITY=${SIGN_IDENTITY:--}
 # The public half of the EdDSA key that signs release DMGs (private half: the

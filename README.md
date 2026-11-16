@@ -6,14 +6,19 @@ When a disk image finishes downloading, Drop shows a small panel with the app, i
 
 A [Nidus Labs](https://niduslabs.dev) app. *A home for little ideas.*
 
-## Status
+## Install
 
-Early. The disk image reader is done; the app isn't built yet.
+Download the latest `Drop-<version>.dmg` from [Releases](https://github.com/niduslabs-dev/drop/releases/latest), open it and drag Drop to Applications. Needs macOS 15 or later. Drop is signed with a Developer ID and notarized by Apple, and it updates itself.
 
-- **Done:** a Swift package that reads disk images directly: the UDIF container with every compression Apple's tools produce (zlib, bzip2, lzfse, lzma, ADC), GUID, Apple and MBR partition maps, and read-only HFS+ and APFS. It opens and reads all 34 popular app DMGs in its test set without mounting.
-- **Done:** the extractor (stages the app with its quarantine and notarization ticket intact, then installs it with one rename) and the verifier (who signed it, whether Apple notarized it, and whether it's damaged). Eight real apps extract identical to a Finder copy and pass `codesign --verify --deep --strict`.
-- **Done:** the install pipeline, and a hidden-mount fallback for images Drop can't read itself (encrypted, sparse, unusual formats), which still shows the licence and asks for a password in Drop's own panel.
-- **Next:** the app itself: the Downloads watcher and the install panel.
+Drop sends nothing anywhere. Its only network use is checking GitHub for its own updates, and macOS's own notarization check of the apps you install.
+
+## How it works
+
+- **A new download:** Drop watches your Downloads folder. When a `.dmg` finishes, a small panel slides in at the top right with the app's icon, version and signer. Click Install.
+- **A double-click:** with "Open disk images with Drop" on, a `.dmg` opens in Drop's install window instead of mounting.
+- **No mounting:** Drop reads the disk image itself: the UDIF container with every compression Apple's tools produce (zlib, bzip2, lzfse, lzma, ADC), GUID, Apple and MBR partition maps, and HFS+ and APFS. Images it can't read (encrypted, sparse, unusual formats) are mounted hidden and installed the same way.
+- **Safety:** Drop shows who signed the app and whether Apple notarized it before you install, refuses damaged apps, compares the developer with the copy you already have, and keeps the quarantine record so Gatekeeper still checks the app on first open.
+- **Out of the way:** no Dock or menu bar icon, about 17 MB of memory and no CPU while idle.
 
 ## Building
 
