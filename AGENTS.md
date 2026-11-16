@@ -10,6 +10,8 @@ A Swift package (`Package.swift`), no Xcode project yet:
 - `DiskImage`: UDIF container, decoders, partition maps.
 - `HFSPlus`, `APFS`: read-only filesystems over a `BlockDevice`.
 - `DMGReader`: opens a `.dmg` and returns its filesystem. `dmg-inspect`: a CLI over it.
+- `Extractor`: stages an app out of a `FileSystem` (4 workers, POSIX writes, xattrs, quarantine with the do-not-translocate flag) and installs it by rename or atomic swap.
+- `Verifier`: signing info, strict validation, Gatekeeper assessment, the `Verdict` the panel shows, same-developer check, and stapling a DMG's ticket into an app. Use the `async` overloads from tasks; the sync ones stall under Swift concurrency.
 
 ## Commands
 

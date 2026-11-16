@@ -10,6 +10,10 @@ import PackageDescription
 ///   Turns a `.dmg` file into a `BlockDevice` per partition.
 /// - `HFSPlus`, `APFS`: read-only filesystems over any `BlockDevice`.
 /// - `DMGReader`: opens a `.dmg`, finds the partition, detects the filesystem and returns it.
+/// - `Extractor`: writes an app out of a `FileSystem` into a staging folder (fast parallel
+///   writes, xattrs, quarantine), then moves it into place.
+/// - `Verifier`: signature, Team ID and notarization of a staged app, and stapling the
+///   DMG's notarization ticket into an app that has none.
 let package = Package(
     name: "Drop",
     platforms: [.macOS(.v15)],
@@ -27,11 +31,19 @@ let package = Package(
         .target(name: "HFSPlus", dependencies: ["ReaderCore"]),
         .target(name: "APFS", dependencies: ["ReaderCore"]),
         .target(name: "DMGReader", dependencies: ["ReaderCore", "DiskImage", "HFSPlus", "APFS"]),
-        .executableTarget(name: "DMGInspect", dependencies: ["DMGReader"]),
+        .target(name: "Extractor", dependencies: ["ReaderCore"]),
+        .target(
+            name: "Verifier",
+            dependencies: ["ReaderCore", "DiskImage"],
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .executableTarget(name: "DMGInspect", dependencies: ["DMGReader", "Extractor", "Verifier"]),
         .testTarget(name: "ReaderCoreTests", dependencies: ["ReaderCore"]),
         .testTarget(name: "DiskImageTests", dependencies: ["DiskImage"]),
         .testTarget(name: "HFSPlusTests", dependencies: ["HFSPlus"]),
         .testTarget(name: "APFSTests", dependencies: ["APFS"]),
         .testTarget(name: "DMGReaderTests", dependencies: ["DMGReader"]),
+        .testTarget(name: "ExtractorTests", dependencies: ["Extractor", "DMGReader"]),
+        .testTarget(name: "VerifierTests", dependencies: ["Verifier", "DMGReader", "Extractor"]),
     ]
 )

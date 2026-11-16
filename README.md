@@ -11,7 +11,8 @@ A [Nidus Labs](https://niduslabs.dev) app. *A home for little ideas.*
 Early. The disk image reader is done; the app isn't built yet.
 
 - **Done:** a Swift package that reads disk images directly: the UDIF container with every compression Apple's tools produce (zlib, bzip2, lzfse, lzma, ADC), GUID, Apple and MBR partition maps, and read-only HFS+ and APFS. It opens and reads all 34 popular app DMGs in its test set without mounting.
-- **Next:** the extractor (staging the app with quarantine and its notarization ticket intact), then the app itself: the Downloads watcher and the install panel.
+- **Done:** the extractor (stages the app with its quarantine and notarization ticket intact, then installs it with one rename) and the verifier (who signed it, whether Apple notarized it, and whether it's damaged). Eight real apps extract identical to a Finder copy and pass `codesign --verify --deep --strict`.
+- **Next:** the app itself: the Downloads watcher and the install panel.
 
 ## Building
 

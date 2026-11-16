@@ -11,6 +11,8 @@ struct Inode: Sendable {
     let linkCount: Int32
     let bsdFlags: UInt32
     let mode: UInt16
+    /// `mod_time`: nanoseconds since 1970-01-01 UTC.
+    let modificationTime: UInt64
     /// Logical size from the `INO_EXT_TYPE_DSTREAM` field; 0 when there is none.
     let size: UInt64
     /// The name from `INO_EXT_TYPE_NAME` (one of the names, for a hard link).
@@ -219,6 +221,7 @@ public final class APFSVolume: FileSystem, Sendable {
             linkCount: Int32(bitPattern: try data.le32(base + Format.Inode.linkCount)),
             bsdFlags: try data.le32(base + Format.Inode.bsdFlags),
             mode: try data.le16(base + Format.Inode.mode),
+            modificationTime: try data.le64(base + Format.Inode.modificationTime),
             size: size,
             name: name)
     }
@@ -238,7 +241,16 @@ public final class APFSVolume: FileSystem, Sendable {
             mode: inode.mode & Format.Mode.permissionMask,
             size: kind == .directory ? 0 : inode.size,
             isCompressed: kind == .file ? try isCompressed(inode) : false,
-            isHardLink: kind == .file && inode.linkCount > 1)
+            isHardLink: kind == .file && inode.linkCount > 1,
+            modificationTime: Self.timestamp(inode.modificationTime))
+    }
+
+    private static let nanosecondsPerSecond: UInt64 = 1_000_000_000
+
+    private static func timestamp(_ nanoseconds: UInt64) -> Entry.Timestamp {
+        Entry.Timestamp(
+            seconds: Int64(nanoseconds / nanosecondsPerSecond),
+            nanoseconds: UInt32(nanoseconds % nanosecondsPerSecond))
     }
 
     private func isCompressed(_ inode: Inode) throws -> Bool {

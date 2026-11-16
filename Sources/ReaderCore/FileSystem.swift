@@ -22,10 +22,27 @@ public struct Entry: Sendable, Hashable {
     public let isCompressed: Bool
     /// More than one directory entry points at this file (HFS+ hard link, APFS link count > 1).
     public let isHardLink: Bool
+    /// When the item's contents last changed, as the filesystem stores it (HFS+ has whole
+    /// seconds only). Nil when the filesystem doesn't record one; the extractor then leaves
+    /// the time it was written.
+    public let modificationTime: Timestamp?
+
+    /// A point in time as seconds and nanoseconds since 1970-01-01 UTC, the shape
+    /// `futimens` takes, so no precision is lost through a `Double`.
+    public struct Timestamp: Sendable, Hashable {
+        public let seconds: Int64
+        /// `0..<1_000_000_000`.
+        public let nanoseconds: UInt32
+
+        public init(seconds: Int64, nanoseconds: UInt32 = 0) {
+            self.seconds = seconds
+            self.nanoseconds = nanoseconds
+        }
+    }
 
     public init(
         id: UInt64, name: String, kind: Kind, mode: UInt16, size: UInt64,
-        isCompressed: Bool = false, isHardLink: Bool = false
+        isCompressed: Bool = false, isHardLink: Bool = false, modificationTime: Timestamp? = nil
     ) {
         self.id = id
         self.name = name
@@ -34,6 +51,7 @@ public struct Entry: Sendable, Hashable {
         self.size = size
         self.isCompressed = isCompressed
         self.isHardLink = isHardLink
+        self.modificationTime = modificationTime
     }
 }
 
