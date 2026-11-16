@@ -81,6 +81,7 @@ struct MountFallbackSessionTests {
         var options = scratch.options()
         options.forceMountFallback = force
         let session = InstallSession(dmg: dmg, options: options)
+        let earlyRead = Task { await earlySummary(session) }
         await session.start()
         var settled = await waitFor(session) { $0.isSettled }
         if case .needsLicence = settled {
@@ -99,6 +100,12 @@ struct MountFallbackSessionTests {
         #expect(summary.bundleName == "Tiny.app")
         #expect(summary.version == "1.0", "the summary comes from the mounted app's Info.plist")
         #expect(summary.bundleIdentifier == "dev.niduslabs.drop.fixture.tiny")
+        let identified = await earlyRead.value
+        #expect(identified.identified?.version == "1.0", "\(name): named from the mounted volume first")
+        #expect(identified.identified?.size == nil)
+        #expect(identified.nextState == "preparing" || identified.nextState == "waitingToPrepare")
+        let early = await session.timings
+        #expect((early.identified ?? .infinity) < (early.stagingStarted ?? 0))
         #expect(await session.mount == nil, "detached once staged")
         #expect(scratch.leftovers.isEmpty)
         await session.install()

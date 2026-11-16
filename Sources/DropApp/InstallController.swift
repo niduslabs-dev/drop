@@ -76,6 +76,7 @@ final class InstallController {
         // Up at once with the file name and "Reading…"; the boards fill in as the session
         // reads the image, so the popup never waits for the image to open.
         panel.show(model)
+        model.latency = LatencyMarks(dmg: model.dmg)
     }
 
     private func startSession(for model: PanelModel) {
@@ -114,6 +115,7 @@ final class InstallController {
         let hadSummary = model.summary != nil
         model.state = state
         model.noteProgress()
+        model.latency?.observe(model)
         if !hadSummary, model.summary != nil {
             Log.panel.info("summary shown \(model.dmg.lastPathComponent, privacy: .public)")
         }
@@ -127,7 +129,7 @@ final class InstallController {
             return
         case .installed(let app):
             installed(app, model: model, session: session)
-        case .preparing, .waitingToPrepare, .ready:
+        case .identified, .preparing, .waitingToPrepare, .ready:
             if model.installWhenReady {
                 model.installWhenReady = false
                 install(model)
@@ -238,8 +240,6 @@ final class InstallController {
 
     private func installed(_ app: URL, model: PanelModel, session: InstallSession) {
         model.installedApp = app
-        store.addRecent(
-            RecentInstall(name: model.appName, version: model.summary?.version, path: app.path, date: .now))
         if case .watched = model.origin { store.markHandled(model.dmg) }
         if preferences.openAfterInstall || model.reopenAfterInstall { NSWorkspace.shared.open(app) }
         let trashFolder = launch.trashFolder

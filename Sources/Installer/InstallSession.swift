@@ -119,6 +119,8 @@ public actor InstallSession {
     /// Set once the user clicked Install; `run` installs as soon as the verdict allows.
     private var installRequested = false
     private var summary: AppSummary?
+    /// The licence screen's early read, reused once the licence is accepted.
+    private var early: EarlyRead?
     private var staged: StagedApp?
     /// For tests: the area being written, and the image's device.
     private(set) var stagingArea: StagingArea?
@@ -167,13 +169,13 @@ public actor InstallSession {
     /// `providePassword(_:)` from a string, for a text field's value.
     public func providePassword(_ password: String) { providePassword(MountPassword(password)) }
 
-    /// Installs. While preparing, this boosts staging to full speed and installs once the
+    /// Installs. While identified or preparing, this boosts staging to full speed and installs once the
     /// app is staged and checked (unless the check ends in a warning or refusal: see
     /// `InstallState`). In `warning` it is Install Anyway. Elsewhere it does nothing.
     /// Returns once the session settles: installed, failed, or waiting in `warning`.
     public func install() async {
         switch state {
-        case .preparing(let summary, _), .waitingToPrepare(let summary):
+        case .identified(let summary), .preparing(let summary, _), .waitingToPrepare(let summary):
             installRequested = true
             timings.boosted = elapsed()
             job.boost()
@@ -235,15 +237,28 @@ public actor InstallSession {
         let app: Entry
         do {
             let path = dmg.path
-            opened = try await Self.onThread(qos: .utility) { try DMGReader.open(path: path) }
+            // Opening and the first reads are small and the popup is already up waiting for
+            // them: user-initiated, at the device's fast policy. The background policy starts
+            // once the app is named (`identify`).
+            opened = try await Self.onThread(qos: .userInitiated) { try DMGReader.open(path: path) }
             timings.opened = elapsed()
-            // The catalog walk and the plist and icon reads decode chunks too: keep them to
-            // the gentle policy's smaller cache rather than the device's default.
-            if !isFast { opened.image.udif?.decodePolicy = options.backgroundDecodePolicy }
             if let licence = opened.image.licence {
                 let fileSystem = opened.fileSystem
-                let preview = try? await Self.onThread(qos: .utility) { Self.preview(in: fileSystem) }
-                state = .needsLicence(licence, preview: preview)
+                let destination = options.destination
+                let read = try? await Self.onThread(qos: .userInitiated) {
+                    Self.identifySingleApp(in: fileSystem, destination: destination)
+                }
+                early = read
+                state = .needsLicence(licence, preview: read.map { AppPreview($0.summary) })
+                if !isFast { opened.image.udif?.decodePolicy = options.backgroundDecodePolicy }
+                if let read {
+                    let size = try? await Self.onThread(qos: .utility) { try Self.size(of: read.app, in: fileSystem) }
+                    if let size, case .needsLicence(let shown, var preview?) = state {
+                        preview.size = size
+                        early?.summary.size = size
+                        state = .needsLicence(shown, preview: preview)
+                    }
+                }
                 guard await waitForLicence() else { return finishCancelled() }
                 licenceAccepted = true
             }
@@ -255,7 +270,7 @@ public actor InstallSession {
         } catch {
             return finish(with: error)
         }
-        await prepareAndStage(app, from: opened.fileSystem, udif: opened.image.udif)
+        await identifyAndStage(app, from: opened.fileSystem, udif: opened.image.udif)
     }
 
     /// The hidden-mount fallback: licence (when readable), password (when encrypted),
@@ -316,13 +331,13 @@ public actor InstallSession {
         let app: Entry
         let fileSystem: MountedFileSystem
         do {
-            fileSystem = try await Self.onThread(qos: .utility) { try mount.fileSystem() }
+            fileSystem = try await Self.onThread(qos: .userInitiated) { try mount.fileSystem() }
             guard let chosen = try chooseApp(in: fileSystem) else { return }
             app = chosen
         } catch {
             return finish(with: error)
         }
-        await prepareAndStage(app, from: fileSystem, udif: nil)
+        await identifyAndStage(app, from: fileSystem, udif: nil)
     }
 
     /// Detaches the hidden mount, if one is attached. A detach that fails even when forced
@@ -334,14 +349,47 @@ public actor InstallSession {
         timings.unmounted = elapsed()
     }
 
+    /// Names the app (`identified`), then stages and checks it, from whichever filesystem
+    /// holds it. The first read is small and runs at user-initiated priority on the device's
+    /// current policy; the size walk and everything after run at the background policy.
+    private func identifyAndStage(_ app: Entry, from fileSystem: any FileSystem, udif: UDIFDevice?) async {
+        let destination = options.destination
+        let summary: AppSummary
+        if let early, early.app.name == app.name, mount == nil {
+            summary = early.summary
+        } else {
+            summary =
+                await
+                (try? Self.onThread(qos: .userInitiated) {
+                    Self.identify(app: app, in: fileSystem, destination: destination)
+                })
+                ?? AppSummary(
+                    bundleName: app.name, name: app.name.trimmingAppSuffix, version: nil, bundleIdentifier: nil,
+                    size: nil)
+        }
+        early = nil
+        self.summary = summary
+        timings.identified = elapsed()
+        state =
+            installRequested
+            ? .installing(summary, InstallProgress(bytesDone: 0, bytesTotal: summary.size ?? 0))
+            : .identified(summary)
+        if !isFast { udif?.decodePolicy = options.backgroundDecodePolicy }
+        guard !stopFlag.isSet else { return finishCancelled() }
+        await prepareAndStage(app, summary: summary, from: fileSystem, udif: udif)
+    }
+
     /// Staging, the check and the verdict, from whichever filesystem holds the app.
-    private func prepareAndStage(_ app: Entry, from fileSystem: any FileSystem, udif: UDIFDevice?) async {
+    private func prepareAndStage(
+        _ app: Entry, summary identified: AppSummary, from fileSystem: any FileSystem, udif: UDIFDevice?
+    ) async {
         let destination = options.destination
         let dmgURL = dmg
         let prepared: Prepared
         do {
-            prepared = try await Self.onThread(qos: .utility) {
-                try Prepared.make(app: app, fileSystem: fileSystem, destination: destination, dmg: dmgURL)
+            prepared = try await Self.onThread(qos: isFast ? .userInitiated : .utility) {
+                try Prepared.make(
+                    app: app, summary: identified, fileSystem: fileSystem, destination: destination, dmg: dmgURL)
             }
         } catch {
             return finish(with: error)
@@ -353,7 +401,7 @@ public actor InstallSession {
             Extractor.discard(prepared.area)
             return finishCancelled()
         }
-        lastProgress = InstallProgress(bytesDone: 0, bytesTotal: summary.size)
+        lastProgress = InstallProgress(bytesDone: 0, bytesTotal: summary.size ?? 0)
         state = installRequested ? .installing(summary, lastProgress) : .preparing(summary, lastProgress)
         watchConditions()
         defer {
@@ -396,7 +444,6 @@ public actor InstallSession {
         summary.signer = verdict.signing?.organisation ?? verdict.signing?.signer
         summary.teamID = verdict.signing?.teamID
         summary.isNotarized = verdict.assessment?.assessment?.isCheckedByApple == true
-        summary.iconFile = prepared.bundleInfo?.iconURL(inStagedApp: staged.url)
         if let installed = prepared.installedSigning, let signing = verdict.signing {
             summary.update?.developer = Verifier.sameDeveloper(new: signing, installed: installed)
         } else if summary.update != nil {
@@ -492,20 +539,38 @@ public actor InstallSession {
         for waiter in waiters { waiter.resume() }
     }
 
-    /// The app's name, version, size and icon for the licence screen, when the image holds
-    /// exactly one app. Reads the catalog, `Info.plist` and the icon file only.
-    static func preview(in fileSystem: any FileSystem) -> AppPreview? {
+    /// The early read: the app's `Info.plist` and icon from the image, and the installed
+    /// copy's version from the destination (an `lstat` and a small plist). No size (nil),
+    /// no signatures. Shown as `identified`, and on the licence screen as its preview.
+    static func identify(app: Entry, in fileSystem: any FileSystem, destination: URL) -> AppSummary {
+        let info = BundleInfo.read(app: app, in: fileSystem)
+        var summary = AppSummary(
+            bundleName: app.name, name: info?.displayName ?? app.name.trimmingAppSuffix, version: info?.shortVersion,
+            bundleIdentifier: info?.identifier, size: nil, iconData: info?.iconData(app: app, in: fileSystem))
+        let installed = destination.appending(path: app.name, directoryHint: .isDirectory)
+        var status = stat()
+        if lstat(installed.path, &status) == 0, status.st_mode & S_IFMT == S_IFDIR {
+            summary.update = AppSummary.Update(
+                installedVersion: BundleInfo.read(installedApp: installed)?.shortVersion, developer: nil)
+        }
+        return summary
+    }
+
+    /// `identify` for the licence screen, when the image holds exactly one app.
+    static func identifySingleApp(in fileSystem: any FileSystem, destination: URL) -> EarlyRead? {
         guard let apps = try? DMGReader.apps(in: fileSystem), apps.count == 1, let app = apps.first else {
             return nil
         }
-        let info = BundleInfo.read(app: app, in: fileSystem)
+        return EarlyRead(app: app, summary: identify(app: app, in: fileSystem, destination: destination))
+    }
+
+    /// Sum of the app's file sizes, from the catalog.
+    static func size(of app: Entry, in fileSystem: any FileSystem) throws -> UInt64 {
         var size: UInt64 = 0
-        try? DMGReader.walk(fileSystem, from: app) { _, entry in
+        try DMGReader.walk(fileSystem, from: app) { _, entry in
             if entry.kind == .file { size &+= entry.size }
         }
-        return AppPreview(
-            name: info?.displayName ?? app.name.trimmingAppSuffix, version: info?.shortVersion, size: size,
-            iconData: info?.iconData(app: app, in: fileSystem))
+        return size
     }
 
     /// The single top-level app, or nil after setting `cannotInstall`.
@@ -561,7 +626,7 @@ public actor InstallSession {
     /// handed to `options.trash`.
     private func moveIntoPlace() async {
         guard let staged, let summary, !stopFlag.isSet else { return }
-        state = .installing(summary, InstallProgress(bytesDone: summary.size, bytesTotal: summary.size))
+        state = .installing(summary, InstallProgress(bytesDone: summary.size ?? 0, bytesTotal: summary.size ?? 0))
         let destination = options.destination
         let trash = options.trash
         do {
@@ -663,32 +728,31 @@ public actor InstallSession {
     }
 }
 
-/// Everything read before staging starts, in one blocking pass off the actor.
+/// The app chosen in an image and what `InstallSession.identify` read about it.
+struct EarlyRead: Sendable {
+    var app: Entry
+    var summary: AppSummary
+}
+
+/// Everything read after `identified` and before staging starts, in one blocking pass off
+/// the actor at the background policy: the size walk, the installed copy's signature, the
+/// ticket, the quarantine and the staging area.
 private struct Prepared: Sendable {
     var summary: AppSummary
-    var bundleInfo: BundleInfo?
     var installedSigning: SigningInfo?
     var ticket: NotarizationTicket?
     var quarantine: String?
     var area: StagingArea
 
-    static func make(app: Entry, fileSystem: any FileSystem, destination: URL, dmg: URL) throws -> Prepared {
-        let info = BundleInfo.read(app: app, in: fileSystem)
-        var size: UInt64 = 0
-        try DMGReader.walk(fileSystem, from: app) { _, entry in
-            if entry.kind == .file { size &+= entry.size }
-        }
-        var summary = AppSummary(
-            bundleName: app.name, name: info?.displayName ?? app.name.trimmingAppSuffix, version: info?.shortVersion,
-            bundleIdentifier: info?.identifier, size: size, iconFile: nil, signer: nil, teamID: nil,
-            isNotarized: false, update: nil)
+    static func make(
+        app: Entry, summary identified: AppSummary, fileSystem: any FileSystem, destination: URL, dmg: URL
+    ) throws -> Prepared {
+        var summary = identified
+        summary.size = try summary.size ?? InstallSession.size(of: app, in: fileSystem)
 
         var installedSigning: SigningInfo?
-        let installed = destination.appending(path: app.name, directoryHint: .isDirectory)
-        var status = stat()
-        if lstat(installed.path, &status) == 0, status.st_mode & S_IFMT == S_IFDIR {
-            summary.update = AppSummary.Update(
-                installedVersion: BundleInfo.read(installedApp: installed)?.shortVersion, developer: nil)
+        if summary.update != nil {
+            let installed = destination.appending(path: app.name, directoryHint: .isDirectory)
             installedSigning = try? Verifier.signingInfo(app: installed)
         }
 
@@ -697,7 +761,7 @@ private struct Prepared: Sendable {
         let quarantine = try Quarantine.read(at: dmg)
         let area = try Extractor.makeStagingArea(for: destination)
         return Prepared(
-            summary: summary, bundleInfo: info, installedSigning: installedSigning, ticket: ticket,
+            summary: summary, installedSigning: installedSigning, ticket: ticket,
             quarantine: quarantine, area: area)
     }
 }

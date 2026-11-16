@@ -6,6 +6,7 @@ import Verifier
 
 @testable import Extractor
 @testable import Installer
+@testable import Mounter
 
 /// Sessions over the small DMGs `scripts/fixtures-installer.sh` builds.
 @Suite(.serialized)
@@ -25,7 +26,7 @@ struct InstallSessionFixtureTests {
         #expect(summary.name == "Tiny")
         #expect(summary.version == "1.0")
         #expect(summary.bundleIdentifier == "dev.niduslabs.drop.fixture.tiny")
-        #expect(summary.size > 0)
+        #expect((summary.size ?? 0) > 0)
         #expect(summary.teamID == nil)
         #expect(!summary.isNotarized)
         #expect(summary.update == nil)
@@ -53,6 +54,26 @@ struct InstallSessionFixtureTests {
         #expect(seen.first == "reading")
         #expect(seen.contains("preparing"))
         #expect(seen.last == "warning")
+        await session.cancel()
+    }
+
+    /// The name and version are published as `identified` before the size walk and before
+    /// staging starts.
+    @Test func earlySummaryComesBeforeStaging() async throws {
+        let scratch = try Scratch("early")
+        defer { scratch.remove() }
+        let session = InstallSession(dmg: try Fixtures.dmg("one-app"), options: scratch.options())
+        await session.start()
+        let early = await earlySummary(session)
+        #expect(early.identified?.name == "Tiny")
+        #expect(early.identified?.version == "1.0")
+        #expect(early.identified?.bundleIdentifier == "dev.niduslabs.drop.fixture.tiny")
+        #expect(early.identified?.size == nil, "the size walk comes after")
+        #expect(early.identified?.signer == nil)
+        #expect(early.nextState == "preparing")
+        let timings = await session.timings
+        let identified = try #require(timings.identified)
+        #expect(identified < (timings.stagingStarted ?? .infinity))
         await session.cancel()
     }
 
@@ -237,13 +258,47 @@ struct BundleInfoTests {
         try Data([1]).write(to: resources.appending(path: "AppIcon.icns"))
         try FileManager.default.createSymbolicLink(
             at: resources.appending(path: "Linked.icns"), withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
-        func icon(_ name: String) throws -> URL? {
-            try #require(BundleInfo(plist: try plist(["CFBundleIconFile": name]))).iconURL(inStagedApp: app)
+        let fileSystem = try MountedFileSystem(mountPoint: scratch.root, volumeName: "Scratch")
+        let entry = try #require(try fileSystem.lookup(["Thing.app"]))
+        func icon(_ name: String) throws -> Data? {
+            try #require(BundleInfo(plist: try plist(["CFBundleIconFile": name]))).iconData(app: entry, in: fileSystem)
         }
-        #expect(try icon("AppIcon")?.lastPathComponent == "AppIcon.icns")
-        #expect(try icon("AppIcon.icns")?.lastPathComponent == "AppIcon.icns")
+        #expect(try icon("AppIcon") == Data([1]))
+        #expect(try icon("AppIcon.icns") == Data([1]))
         #expect(try icon("Linked") == nil, "a symlink is not followed")
         #expect(try icon("../../../etc/hosts") == nil)
         #expect(try icon("Missing") == nil)
+    }
+
+    /// The early read over a mounted volume: name, version, bundle ID and icon bytes, the
+    /// installed copy's version, and no size yet.
+    @Test func earlyReadFromAMountedVolume() throws {
+        let scratch = try Scratch("early-mounted")
+        defer { scratch.remove() }
+        let volume = scratch.root.appending(path: "volume")
+        let contents = volume.appending(path: "Thing.app/Contents")
+        try FileManager.default.createDirectory(
+            at: contents.appending(path: "Resources"), withIntermediateDirectories: true)
+        try Data(
+            try plist([
+                "CFBundleName": "Thing", "CFBundleShortVersionString": "3.1", "CFBundleIdentifier": "com.example.thing",
+                "CFBundleIconFile": "AppIcon",
+            ])
+        ).write(to: contents.appending(path: "Info.plist"))
+        let icon = Data("icns-bytes".utf8)
+        try icon.write(to: contents.appending(path: "Resources/AppIcon.icns"))
+        let installed = scratch.destination.appending(path: "Thing.app/Contents")
+        try FileManager.default.createDirectory(at: installed, withIntermediateDirectories: true)
+        try Data(try plist(["CFBundleShortVersionString": "3.0"])).write(to: installed.appending(path: "Info.plist"))
+
+        let fileSystem = try MountedFileSystem(mountPoint: volume, volumeName: "Thing")
+        let read = try #require(InstallSession.identifySingleApp(in: fileSystem, destination: scratch.destination))
+        #expect(read.app.name == "Thing.app")
+        #expect(read.summary.name == "Thing")
+        #expect(read.summary.version == "3.1")
+        #expect(read.summary.bundleIdentifier == "com.example.thing")
+        #expect(read.summary.iconData == icon)
+        #expect(read.summary.size == nil)
+        #expect(read.summary.update?.installedVersion == "3.0")
     }
 }

@@ -7,7 +7,6 @@ import SwiftUI
 /// the Ask switch; Quit Drop is in the last group, since Drop has no menu bar menu.
 struct SettingsView: View {
     @Bindable var preferences: Preferences
-    let recent: [RecentInstall]
     let changeFolder: () -> Void
     let setOpenAtLogin: (Bool) -> Void
     let setOpensDiskImages: (Bool) -> Void
@@ -15,8 +14,6 @@ struct SettingsView: View {
     /// The app's version, for the last group.
     var version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
-    @State private var showsRecent = false
-    @Environment(\.settingsOpensRecent) private var opensRecent
     @Environment(\.titleBarHeight) private var titleBarHeight
     @Environment(\.settingsSizing) private var sizing
     @State private var showsSkipInfo = false
@@ -44,8 +41,6 @@ struct SettingsView: View {
         .padding(.top, titleBarHeight)
         .background(SurfaceBackground(kind: .settings).ignoresSafeArea())
         .foregroundStyle(Theme.Colour.bodyText)
-        .sheet(isPresented: $showsRecent) { RecentSheet(recent: recent) { showsRecent = false } }
-        .onChange(of: opensRecent, initial: true) { if opensRecent { showsRecent = true } }
     }
 
     /// The scroll-edge effect. The scroll view starts below the title bar and clips there,
@@ -93,9 +88,6 @@ struct SettingsView: View {
                     SwitchRow(
                         title: "Open disk images with Drop", caption: "Double-click a .dmg to get the install window.",
                         isOn: handlerBinding)
-                }
-                group("Recent") {
-                    DisclosureRow(title: "Recent installs", value: "\(recent.count)") { showsRecent = true }
                 }
                 group("Drop") {
                     SettingsRow(version.isEmpty ? "Drop" : "Version \(version)") {
@@ -174,8 +166,6 @@ struct SettingsView: View {
 }
 
 extension EnvironmentValues {
-    /// Opens the Recent sheet as Settings appears (the demo's settings-recent state).
-    @Entry var settingsOpensRecent = false
     /// Debug: scrolls the Settings page to this offset (`demoScroll`).
     @Entry var settingsDemoOffset: CGFloat?
     /// Where the Settings page reports its height (`SettingsSizing`).
@@ -222,62 +212,6 @@ struct DisclosureRow: View {
     }
 }
 
-/// The Recent sheet (Sheet primitive, 560 × 480): the apps Drop installed, newest first,
-/// each with Show; Done closes it (Return or Esc).
-struct RecentSheet: View {
-    let recent: [RecentInstall]
-    let done: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Recent installs").font(Theme.Font.sectionTitle).accessibilityAddTraits(.isHeader)
-            Text("Apps Drop installed, newest first.").font(Theme.Font.body)
-                .foregroundStyle(Theme.Colour.secondaryText)
-                .padding(.top, Theme.Space.s)
-            ScrollView {
-                RowCard {
-                    if recent.isEmpty {
-                        Text("Nothing installed yet.").font(Theme.Font.body)
-                            .foregroundStyle(Theme.Colour.secondaryText)
-                            .frame(maxWidth: .infinity, minHeight: Theme.Settings.recentRowHeight, alignment: .leading)
-                            .padding(.horizontal, Theme.Row.horizontalPadding)
-                    }
-                    ForEach(recent) { install in
-                        HStack(spacing: Theme.Settings.rowSpacing) {
-                            Image(nsImage: NSWorkspace.shared.icon(forFile: install.path))
-                                .resizable()
-                                .frame(width: Theme.Icon.recentSize, height: Theme.Icon.recentSize)
-                                .accessibilityHidden(true)
-                            Text(install.title).font(Theme.Font.body).lineLimit(1).truncationMode(.middle)
-                            Spacer(minLength: 0)
-                            Text(Format.relative(install.date)).font(Theme.Font.small)
-                                .foregroundStyle(Theme.Colour.secondaryText)
-                            Button("Show") {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: install.path)])
-                            }
-                            .buttonStyle(.nidusLink())
-                        }
-                        .frame(minHeight: Theme.Settings.recentRowHeight)
-                        .padding(.horizontal, Theme.Row.horizontalPadding)
-                    }
-                }
-            }
-            .padding(.top, Theme.Space.l)
-            HStack {
-                Spacer()
-                Button("Done", action: done).buttonStyle(.nidusPrimary)
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.top, Theme.Space.l)
-        }
-        .padding(Theme.Space.xl)
-        .frame(width: Theme.Settings.sheetWidth, height: Theme.Settings.sheetHeight)
-        .foregroundStyle(Theme.Colour.bodyText)
-        .background(SurfaceBackground(kind: .settings))
-        .onExitCommand(perform: done)
-    }
-}
-
 /// The Settings window. While it's open Drop has a Dock icon and is in Command-Tab
 /// (`ActivationPolicy`).
 ///
@@ -318,11 +252,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         hosting?.layoutSubtreeIfNeeded()
         // A reopen with the page unchanged reports no new height: use the last one.
         if contentHeight > 0 { resize(window, to: contentHeight) }
-    }
-
-    /// Shows the Recent sheet, for screenshots of it.
-    func presentRecent() {
-        hosting?.rootView = root(AnyView(makeView().environment(\.settingsOpensRecent, true)))
     }
 
     private func makeWindow() -> NSWindow {
@@ -370,8 +299,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     /// Sizes the window to the page, up to the maximum, then centres it: the size has to
     /// be known first, since a later resize keeps the old origin and leaves the window off
-    /// centre (the bug this replaced). Every resize re-centres, so a height change from
-    /// Recent can't push it off either. The first size after `show()` also brings it forward.
+    /// centre (the bug this replaced). Every resize re-centres, so a later height change
+    /// can't push it off either. The first size after `show()` also brings it forward.
     private func resize(_ window: NSWindow, to height: CGFloat) {
         let size = NSSize(width: Theme.Settings.width, height: min(height, Theme.Settings.maxHeight))
         guard presentPending || window.frame.size != size else { return }

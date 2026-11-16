@@ -130,6 +130,18 @@ func waitFor(
     return await session.state
 }
 
+/// The first `identified` summary on the session's stream, and the name of the state
+/// right after it ("preparing" when staging follows). Iterates `updates`, its one consumer.
+func earlySummary(_ session: InstallSession) async -> (identified: AppSummary?, nextState: String?) {
+    var identified: AppSummary?
+    for await state in session.updates {
+        if let found = identified { return (found, String(describing: state).prefix { $0 != "(" }.description) }
+        if case .identified(let summary) = state { identified = summary }
+        if state.isFinal { break }
+    }
+    return (identified, nil)
+}
+
 /// True once neither the staging area nor its discarded sibling exists, within `timeout`.
 func waitUntilGone(_ area: StagingArea, timeout: Duration = .seconds(30)) async -> Bool {
     let aside = area.url.deletingLastPathComponent()

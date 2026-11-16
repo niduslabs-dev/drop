@@ -68,6 +68,7 @@ final class PanelModel: Identifiable {
         didSet {
             if let summary = state.summary { self.summary = summary }
             if case .needsLicence(_, let preview?) = state { self.preview = preview }
+            if appIcon == nil, let data = summary?.iconData ?? preview?.iconData { appIcon = NSImage(data: data) }
             if case .installed = state, installDuration == nil, let installStartedAt {
                 installDuration = ContinuousClock.now - installStartedAt
             }
@@ -75,6 +76,8 @@ final class PanelModel: Identifiable {
     }
     /// What the image said about the app before the licence was agreed to.
     private(set) var preview: AppPreview?
+    /// The app's icon, decoded once from the early read's bytes (summary or preview).
+    private(set) var appIcon: NSImage?
     /// When Install was clicked, and how long it took until installed, for the install
     /// window's "Installed in Applications · 1.2 s".
     var installStartedAt: ContinuousClock.Instant?
@@ -131,6 +134,8 @@ final class PanelModel: Identifiable {
     var isHovered = false
     /// Demo fixtures set this; real sessions use the app's icon.
     var iconOverride: PanelIcon?
+    /// The first-time milestones logged for this panel (popup, summary, icon, size, verified).
+    @ObservationIgnored var latency: LatencyMarks?
 
     @ObservationIgnored var send: (PanelAction) -> Void = { _ in }
 
@@ -147,7 +152,7 @@ final class PanelModel: Identifiable {
         case .reading: summary?.update == nil ? .main : .update
         case .needsLicence: .licence
         case .needsPassword: .password
-        case .preparing, .waitingToPrepare, .ready: summary?.update == nil ? .main : .update
+        case .identified, .preparing, .waitingToPrepare, .ready: summary?.update == nil ? .main : .update
         case .installing: .installing
         case .installed: .done
         case .warning: .warning
@@ -165,7 +170,7 @@ final class PanelModel: Identifiable {
     /// True while staging and the check still run: the signer line isn't known yet.
     var isChecking: Bool {
         switch state {
-        case .reading, .preparing, .waitingToPrepare: true
+        case .reading, .identified, .preparing, .waitingToPrepare: true
         default: false
         }
     }
@@ -180,8 +185,7 @@ final class PanelModel: Identifiable {
     var icon: PanelIcon {
         if let iconOverride { return iconOverride }
         if let installedApp { return .image(NSWorkspace.shared.icon(forFile: installedApp.path)) }
-        if let file = summary?.iconFile, let image = NSImage(contentsOf: file) { return .image(image) }
-        if let data = preview?.iconData, let image = NSImage(data: data) { return .image(image) }
+        if let appIcon { return .image(appIcon) }
         switch board {
         case .fallback: return .placeholder(symbol: "externaldrive")
         case .password: return .placeholder(symbol: "lock")
@@ -193,7 +197,7 @@ final class PanelModel: Identifiable {
 extension InstallState {
     var summary: AppSummary? {
         switch self {
-        case .preparing(let summary, _), .waitingToPrepare(let summary), .ready(let summary),
+        case .identified(let summary), .preparing(let summary, _), .waitingToPrepare(let summary), .ready(let summary),
             .warning(let summary, _), .refused(let summary, _), .installing(let summary, _):
             summary
         case .reading, .needsLicence, .cannotInstall, .needsPassword, .installed, .cancelled, .failed: nil
@@ -202,6 +206,11 @@ extension InstallState {
 }
 
 enum Format {
+    /// "Version 2.4.1 · 84 MB"; either part is left out while unknown.
+    static func versionAndSize(version: String?, size: UInt64?) -> String {
+        [version.map { "Version \($0)" }, size.map(Format.size)].compactMap(\.self).joined(separator: " \u{00B7} ")
+    }
+
     /// "84 MB", in decimal units as Finder shows.
     static func size(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
@@ -215,14 +224,6 @@ enum Format {
         formatter.includesUnit = false
         let done = formatter.string(fromByteCount: Int64(clamping: progress.bytesDone))
         return "\(done) of \(total)"
-    }
-
-    /// "2 min ago", "Yesterday".
-    static func relative(_ date: Date, now: Date = .now) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        formatter.dateTimeStyle = .named
-        return formatter.localizedString(for: date, relativeTo: now).capitalizedFirst
     }
 }
 

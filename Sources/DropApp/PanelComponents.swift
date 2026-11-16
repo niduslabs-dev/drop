@@ -120,9 +120,7 @@ struct ImageHeader: View {
 
     var body: some View {
         HStack(spacing: Theme.Header.spacing) {
-            Image(systemName: "drop")
-                .font(.system(size: Theme.Header.glyph, weight: .semibold))
-                .foregroundStyle(Theme.Colour.link)
+            DropIcon(size: Theme.Header.appIcon)
             (Text("Drop").font(Theme.Font.captionStrong).foregroundStyle(Theme.Colour.bodyText)
                 + Text(" \u{00B7} \(detail)").foregroundStyle(Theme.Colour.secondaryText))
                 .lineLimit(1).truncationMode(.middle)
@@ -136,6 +134,20 @@ struct ImageHeader: View {
         case .watched(let folder): "New in \(folder) \u{00B7} \(model.dmg.lastPathComponent)"
         case .opened: model.dmg.lastPathComponent
         }
+    }
+}
+
+/// Drop's own app icon ("The Slot", `Resources/AppIcon.icns`), untinted: the icon file
+/// carries its own rounded shape. In `swift run` builds without a bundle it is the generic
+/// app icon.
+struct DropIcon: View {
+    let size: CGFloat
+
+    var body: some View {
+        Image(nsImage: NSApp.applicationIconImage ?? NSWorkspace.shared.icon(for: .applicationBundle))
+            .resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 

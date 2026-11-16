@@ -12,7 +12,7 @@
     ///
     /// States: reading, main, preparing, waiting, installing, done, update, update-running,
     /// warning, unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
-    /// password-wrong, settings, settings-recent (its Recent sheet open),
+    /// password-wrong, settings,
     /// settings-mid and settings-bottom (the page scrolled there), settings-reopen
     /// (closed and opened again), done-long (a
     /// 30-character app name), window (the install window an opened image gets) and its
@@ -26,9 +26,10 @@
     @MainActor
     enum Demo {
         static let states = [
-            "reading", "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning",
+            "reading", "main", "identified", "preparing", "waiting", "installing", "done", "update", "update-running",
+            "warning",
             "unsigned", "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
-            "progress-30", "progress-62", "settings", "settings-recent", "settings-mid",
+            "progress-30", "progress-62", "settings", "settings-mid",
             "settings-bottom", "settings-reopen", "done-long", "window", "window-licence",
             "window-licence-one",
             "window-installing", "window-progress-30", "window-progress-62", "window-done", "window-warning",
@@ -58,12 +59,6 @@
                 return
             }
             if state.hasPrefix("settings") {
-                for (name, version, age) in [("Fieldnote", "5.0", 86_400.0), ("Linea", "2.4.1", 120.0)] {
-                    app.store.addRecent(
-                        RecentInstall(
-                            name: name, version: version, path: "/Applications/\(name).app",
-                            date: .now.addingTimeInterval(-age)))
-                }
                 app.settings.show()
                 let scroll: SettingsWindowController.DemoScroll? =
                     switch state {
@@ -77,14 +72,6 @@
                         if let scroll { app.settings.demoScroll(scroll) } else { app.settings.demoReopen() }
                         try? await Task.sleep(for: redraw)
                         print("DEMO_TITLEBAR \(app.settings.titleBarHeight)")
-                        report(app.settings.windowNumber ?? 0)
-                    }
-                    return
-                }
-                if state == "settings-recent" {
-                    Task {
-                        app.settings.presentRecent()
-                        try? await Task.sleep(for: settle)
                         report(app.settings.windowNumber ?? 0)
                     }
                     return
@@ -205,6 +192,12 @@
             switch state {
             case "reading":
                 model.iconOverride = nil
+            case "identified":
+                var early = linea
+                early.size = nil
+                early.signer = nil
+                early.isNotarized = false
+                model.state = .identified(early)
             case "preparing":
                 var early = linea
                 early.signer = nil

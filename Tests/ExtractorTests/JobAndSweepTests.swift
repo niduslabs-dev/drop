@@ -261,10 +261,11 @@ import Testing
         let burst = buffer * options.workerCount
         let expected = Double(Self.fileCount * Self.fileSize - burst) / Double(rate)
         #expect(elapsed >= expected * 0.9, "\(elapsed) s, expected about \(expected) s")
-        // Background-QoS workers are starved on purpose under load, so the upper bound only
-        // holds on a quiet machine; corpus runs load every core and get a looser one.
-        let heavyLoad = ProcessInfo.processInfo.environment["DROP_CORPUS"] == "1"
-        let slack = heavyLoad ? 3.0 : 1.5
+        // Background-QoS workers are starved on purpose under load (the full parallel suite
+        // or a corpus run), so the tight bound, which catches a pacer that sleeps too long,
+        // only runs in the opt-in timing pass (`DROP_TIMING=1`, run on its own).
+        let timingPass = ProcessInfo.processInfo.environment["DROP_TIMING"] == "1"
+        let slack = timingPass ? 1.5 : 3.0
         #expect(elapsed <= expected * slack + 0.3, "\(elapsed) s, expected about \(expected) s")
     }
 

@@ -49,7 +49,7 @@ struct BundleInfo: Sendable, Equatable {
         return BundleInfo(plist: Array(data))
     }
 
-    /// The largest icon read out of an image for the licence screen. Real `.icns` files are
+    /// The largest icon read out of an image for the panel. Real `.icns` files are
     /// up to a few MB; the cap keeps a hostile image from making Drop hold more.
     static let maxIconSize: UInt64 = 8 << 20
 
@@ -61,8 +61,9 @@ struct BundleInfo: Sendable, Equatable {
             ? [iconFile] : [iconFile + "." + Self.iconExtension, iconFile]
     }
 
-    /// Reads the app's icon bytes through the image's filesystem, for the licence screen
-    /// (nothing is staged yet). Nil when there is no regular icon file within the cap.
+    /// Reads the app's icon bytes through the image's filesystem, so the panel shows it
+    /// before anything is staged. Nil when there is no regular icon file within the cap; a
+    /// name with a path separator is ignored, so nothing outside `Contents/Resources` is read.
     func iconData(app: Entry, in fileSystem: any FileSystem) -> Data? {
         for name in iconNames ?? [] {
             guard let entry = try? fileSystem.lookup([app.name, "Contents", "Resources", name]),
@@ -70,20 +71,6 @@ struct BundleInfo: Sendable, Equatable {
                 let bytes = try? fileSystem.contents(of: entry)
             else { continue }
             return Data(bytes)
-        }
-        return nil
-    }
-
-    /// The icon file inside a staged app, when `CFBundleIconFile` names a regular file in
-    /// `Contents/Resources` (with or without its `.icns` extension). A name with a path
-    /// separator is ignored, so the panel never loads a file outside the bundle.
-    func iconURL(inStagedApp app: URL) -> URL? {
-        guard let names = iconNames else { return nil }
-        let resources = app.appending(path: "Contents/Resources", directoryHint: .isDirectory)
-        for name in names {
-            let url = resources.appending(path: name, directoryHint: .notDirectory)
-            var info = stat()
-            if lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG { return url }
         }
         return nil
     }

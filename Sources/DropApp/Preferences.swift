@@ -101,21 +101,18 @@ struct HandledFile: Codable, Hashable, Sendable {
     }
 }
 
-/// Small JSON files in Application Support: the handled list and Recently installed.
-/// Capped, so they never grow without bound.
+/// A small JSON file in Application Support: the handled list, which stops a dismissed or
+/// installed DMG from prompting again. Capped, so it never grows without bound.
 @MainActor
 final class Store {
     static let handledCap = 500
-    static let recentCap = 20
 
     private let directory: URL
     private(set) var handled: [HandledFile]
-    private(set) var recent: [RecentInstall]
 
     init(directory: URL = Store.defaultDirectory) {
         self.directory = directory
         handled = Self.load([HandledFile].self, from: directory.appending(path: "handled.json")) ?? []
-        recent = Self.load([RecentInstall].self, from: directory.appending(path: "recent.json")) ?? []
     }
 
     static var defaultDirectory: URL {
@@ -134,13 +131,6 @@ final class Store {
         save(handled, to: "handled.json")
     }
 
-    func addRecent(_ install: RecentInstall) {
-        recent.removeAll { $0.path == install.path }
-        recent.insert(install, at: 0)
-        if recent.count > Self.recentCap { recent.removeLast(recent.count - Self.recentCap) }
-        save(recent, to: "recent.json")
-    }
-
     private func save(_ value: some Encodable, to name: String) {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -154,15 +144,4 @@ final class Store {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
-}
-
-/// One row of Settings' Recent list.
-struct RecentInstall: Codable, Hashable, Sendable, Identifiable {
-    let name: String
-    let version: String?
-    let path: String
-    let date: Date
-
-    var id: String { path }
-    var title: String { [name, version].compactMap(\.self).joined(separator: " ") }
 }

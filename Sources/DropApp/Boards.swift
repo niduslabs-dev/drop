@@ -41,8 +41,7 @@ struct VersionLine: View {
     }
 
     private var text: String {
-        [summary?.version.map { "Version \($0)" }, summary.map { Format.size($0.size) }]
-            .compactMap(\.self).joined(separator: " \u{00B7} ")
+        Format.versionAndSize(version: summary?.version, size: summary?.size)
     }
 }
 
@@ -63,7 +62,11 @@ struct MainBoard: View {
         PanelCard {
             ImageHeader(model: model)
             TitleRow(icon: model.icon, title: model.appName) {
-                StatusSwap(key: status) { Text(status).monospacedDigit() }
+                StatusSwap(key: statusPhase) {
+                    Text(status).monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : Theme.Motion.numbers, value: status)
+                }
             } badge: {
                 if done {
                     DrawnCheck(lineWidth: Theme.Icon.badgeStroke)
@@ -121,6 +124,14 @@ struct MainBoard: View {
         }
     }
 
+    /// What the status line is saying. A new phase blur-swaps the line; within a phase the
+    /// numbers roll (the size arriving after the version, the bytes copied).
+    private var statusPhase: Int {
+        if done { return 3 }
+        if working { return model.progress.map { $0.fraction < 1 } == true ? 2 : 1 }
+        return model.summary == nil ? 0 : 4
+    }
+
     /// The line under the name: reading, version and size, what's being done, the result.
     private var status: String {
         if done {
@@ -132,8 +143,7 @@ struct MainBoard: View {
             return "Copying files \u{00B7} \(Format.progress(progress))"
         }
         guard let summary = model.summary else { return "Reading\u{2026}" }
-        return [summary.version.map { "Version \($0)" }, Format.size(summary.size)].compactMap(\.self)
-            .joined(separator: " \u{00B7} ")
+        return Format.versionAndSize(version: summary.version, size: summary.size)
     }
 }
 
@@ -144,6 +154,24 @@ struct SignerCard: View {
 
     var body: some View {
         InfoCard {
+            // While checking, the card keeps the height of the usual result (signed and
+            // notarized), so the panel doesn't grow when it lands.
+            ZStack(alignment: .topLeading) {
+                if model.isChecking { reservedRows.hidden().accessibilityHidden(true) }
+                checkSwap
+            }
+        }
+    }
+
+    private var reservedRows: some View {
+        VStack(alignment: .leading, spacing: Theme.Card.rowSpacing) {
+            CardRow(symbol: "checkmark.shield", colour: Theme.Colour.good, text: Text("Signed by"))
+            CardRow(symbol: "checkmark.circle", colour: Theme.Colour.good, text: Text("Notarized by Apple"))
+        }
+    }
+
+    private var checkSwap: some View {
+        Group {
             StatusSwap(key: model.isChecking) {
                 if model.isChecking {
                     WaitingRow(text: waitingText)
@@ -403,6 +431,9 @@ struct LicenceBoard: View {
 
     var body: some View {
         PanelCard(spacing: Theme.Panel.licenceSpacing) {
+            // The same header as every other board, the same gap below it.
+            ImageHeader(model: model)
+                .padding(.bottom, Theme.Panel.spacing - Theme.Panel.licenceSpacing)
             HStack(spacing: Theme.Icon.titleSpacing) {
                 AppIconView(
                     icon: model.icon, size: Theme.Icon.licenceSize, cornerRadius: Theme.Icon.licenceCornerRadius,

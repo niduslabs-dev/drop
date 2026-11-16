@@ -466,14 +466,7 @@ private struct BadgedDiskImage: View {
         ZStack(alignment: .bottomTrailing) {
             DiskImageGlyph(size: Art.largeDiskImage)
                 .frame(width: Art.badgeFrame, height: Art.badgeFrame)
-            Circle()
-                .fill(Theme.Colour.accent)
-                .overlay {
-                    Image(systemName: "drop")
-                        .font(.system(size: Art.badgeGlyph, weight: .bold))
-                        .foregroundStyle(Theme.Colour.onAccent)
-                }
-                .frame(width: Art.badge, height: Art.badge)
+            DropIcon(size: Art.badge)
                 .padding(Art.badgeBorder)
                 .background(Circle().fill(ArtRing()))
                 .padding(.trailing, Art.badgeTrailing)
@@ -512,13 +505,7 @@ private struct LoginItemsArt: View {
                 Rectangle().fill(Color.primary.opacity(Theme.Onboarding.rowDividerOpacity)).frame(height: 1)
             }
             HStack(spacing: Art.listRowSpacing) {
-                RoundedRectangle(cornerRadius: Art.listIconRadius).fill(Theme.Colour.bodyText)
-                    .frame(width: Art.listIcon, height: Art.listIcon)
-                    .overlay {
-                        Image(systemName: "drop")
-                            .font(.system(size: Art.listIconGlyph, weight: .bold))
-                            .foregroundStyle(Theme.Colour.surface)
-                    }
+                DropIcon(size: Art.listIcon)
                 Text("Drop").font(Art.listNameFont).foregroundStyle(Theme.Colour.bodyText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Capsule().fill(Theme.Colour.accent)

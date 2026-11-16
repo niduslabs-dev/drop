@@ -7,15 +7,19 @@ import Verifier
 /// What the panel shows for one DMG, in the order a session moves through it:
 ///
 /// ```
-/// reading ─▶ needsLicence ─▶ (needsPassword) ─▶ preparing ─▶ ready ───────────▶ installing ─▶ installed
-///    │            │           ▲   │      ├▶ warning ──(install)─▶ installing
-///    │            │           ▼   │      └▶ refused
-///    │            │     waitingToPrepare ──(install)─▶ installing
+/// reading ─▶ needsLicence ─▶ (needsPassword) ─▶ identified ─▶ preparing ─▶ ready ──────▶ installing ─▶ installed
+///    │            │                                              ▲   │      ├▶ warning ──(install)─▶ installing
+///    │            │                                              ▼   │      └▶ refused
+///    │            │                                       waitingToPrepare ──(install)─▶ installing
 ///    ├▶ cannotInstall / failed (from reading or preparing)
 ///    └─ cancel() or decline() from any state before installed ─▶ cancelled
 /// ```
 ///
-/// `install()` during `preparing` moves straight to `installing` (staging finishes at full
+/// `identified` comes as soon as the app's `Info.plist` and icon are read (small reads at
+/// user-initiated priority), before the size walk, the staging area and the installed
+/// copy's signature: the panel names the app at once and fills in the rest.
+///
+/// `install()` during `identified` or `preparing` moves straight to `installing` (staging finishes at full
 /// speed, then the app moves into place), unless the verdict turns out to be a warning or a
 /// refusal: then the session stops at `warning` or `refused` and waits, because Install
 /// Anyway is a separate decision the user hasn't made yet.
@@ -34,10 +38,14 @@ public enum InstallState: Sendable, Equatable {
     /// The image carries a licence agreement. Nothing is staged until `acceptLicence()`;
     /// `decline()` ends the session. `preview` names the app and carries its icon when the
     /// image could be read directly; nil on the hidden-mount path, which reads the licence
-    /// before anything is attached.
+    /// before anything is attached. Published twice when there is a preview: first without
+    /// its size, then with it.
     case needsLicence(LicenceAgreement, preview: AppPreview?)
+    /// The app is chosen and named: the summary has the name, version, bundle ID, icon and
+    /// the installed copy's version, but no size yet (nil) and no signer. Next: `preparing`.
+    case identified(AppSummary)
     /// Staging and checking the app in the background. The summary already has the name,
-    /// version, bundle ID, size and installed version; the signer fields fill in at `ready`.
+    /// version, bundle ID, icon, size and installed version; the signer fields fill in at `ready`.
     case preparing(AppSummary, InstallProgress)
     /// Low Power Mode is on, or the Mac is hot (thermal state serious or worse): staging
     /// waits, between files if it had begun, and nothing runs until the state clears
@@ -68,7 +76,8 @@ public enum InstallState: Sendable, Equatable {
     public var isFinal: Bool {
         switch self {
         case .installed, .cancelled, .failed, .refused, .cannotInstall: true
-        case .reading, .needsLicence, .needsPassword, .preparing, .waitingToPrepare, .ready, .warning, .installing:
+        case .reading, .needsLicence, .needsPassword, .identified, .preparing, .waitingToPrepare, .ready, .warning,
+            .installing:
             false
         }
     }
@@ -81,17 +90,22 @@ public struct AppPreview: Sendable, Equatable {
     /// `CFBundleDisplayName`, else `CFBundleName`, else the folder name without `.app`.
     public var name: String
     public var version: String?
-    /// Sum of the app's file sizes, from the catalog.
-    public var size: UInt64
+    /// Sum of the app's file sizes, from the catalog. Nil until the catalog walk is done.
+    public var size: UInt64?
     /// The `.icns` named by `CFBundleIconFile`, as bytes (capped at `BundleInfo.maxIconSize`).
     /// Nil for apps whose icon lives only in an asset catalog.
     public var iconData: Data?
 
-    public init(name: String, version: String?, size: UInt64, iconData: Data?) {
+    public init(name: String, version: String?, size: UInt64?, iconData: Data?) {
         self.name = name
         self.version = version
         self.size = size
         self.iconData = iconData
+    }
+
+    /// The licence screen's preview of an early summary.
+    init(_ summary: AppSummary) {
+        self.init(name: summary.name, version: summary.version, size: summary.size, iconData: summary.iconData)
     }
 }
 
@@ -110,9 +124,9 @@ public struct InstallProgress: Sendable, Equatable {
     public var fraction: Double { bytesTotal == 0 ? 1 : Double(bytesDone) / Double(bytesTotal) }
 }
 
-/// What the panel says about the app. Built in two passes: what the image's catalog and
-/// `Info.plist` tell before staging (shown at once), then what the staged copy's signature
-/// and Gatekeeper tell.
+/// What the panel says about the app. Built in three passes: the app's `Info.plist` and
+/// icon (`identified`, shown at once), the catalog's size (`preparing`), then what the
+/// staged copy's signature and Gatekeeper tell.
 public struct AppSummary: Sendable, Equatable {
     /// The bundle's folder name in the image, such as "Rectangle.app"; also its name once installed.
     public let bundleName: String
@@ -121,11 +135,13 @@ public struct AppSummary: Sendable, Equatable {
     /// `CFBundleShortVersionString`, the version people know.
     public var version: String?
     public var bundleIdentifier: String?
-    /// Sum of the app's file sizes, from the image's catalog.
-    public var size: UInt64
-    /// The `.icns` named by `CFBundleIconFile`, inside the staged copy. Nil until staged,
-    /// and for apps whose icon lives only in an asset catalog.
-    public var iconFile: URL?
+    /// Sum of the app's file sizes, from the image's catalog. Nil in `identified`, set from
+    /// `preparing` on.
+    public var size: UInt64?
+    /// The `.icns` named by `CFBundleIconFile`, read from the image with the `Info.plist`
+    /// (capped at `BundleInfo.maxIconSize`). Nil for apps whose icon lives only in an asset
+    /// catalog.
+    public var iconData: Data?
     /// The signing certificate's organisation (or its common name when it has none).
     public var signer: String?
     public var teamID: String?
@@ -147,8 +163,8 @@ public struct AppSummary: Sendable, Equatable {
 
     /// For the app's previews and demo fixtures; sessions build summaries themselves.
     public init(
-        bundleName: String, name: String, version: String?, bundleIdentifier: String?, size: UInt64,
-        iconFile: URL? = nil, signer: String? = nil, teamID: String? = nil, isNotarized: Bool = false,
+        bundleName: String, name: String, version: String?, bundleIdentifier: String?, size: UInt64?,
+        iconData: Data? = nil, signer: String? = nil, teamID: String? = nil, isNotarized: Bool = false,
         update: Update? = nil
     ) {
         self.bundleName = bundleName
@@ -156,7 +172,7 @@ public struct AppSummary: Sendable, Equatable {
         self.version = version
         self.bundleIdentifier = bundleIdentifier
         self.size = size
-        self.iconFile = iconFile
+        self.iconData = iconData
         self.signer = signer
         self.teamID = teamID
         self.isNotarized = isNotarized
@@ -203,6 +219,8 @@ public enum InstallFailure: Error, Sendable, Equatable {
 /// Seconds from `start()`; nil for phases not reached.
 public struct InstallTimings: Sendable, Equatable {
     public var opened: Double?
+    /// When `identified` was published: name, version and icon read.
+    public var identified: Double?
     public var stagingStarted: Double?
     public var staged: Double?
     public var verified: Double?

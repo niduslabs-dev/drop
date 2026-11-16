@@ -27,7 +27,7 @@ struct InstallSessionCorpusTests {
         #expect(summary.bundleIdentifier == "com.knollsoft.Rectangle")
         #expect(summary.teamID == "XSYZ3E4B7D")
         #expect(summary.isNotarized)
-        #expect(summary.iconFile?.lastPathComponent == "AppIcon.icns")
+        #expect(summary.iconData?.prefix(4) == Data("icns".utf8))
         await session.install()
         let app = scratch.destination.appending(path: "Rectangle.app")
         #expect(try Verifier.ticket(inApp: app) != nil, "the DMG's ticket was stapled into the app")

@@ -94,8 +94,6 @@ enum Theme {
         static let badgeBorder: CGFloat = 2
         static let badgeOffset: CGFloat = 6
         static let badgeStroke: CGFloat = 2.2
-        /// Settings' Recent list.
-        static let recentSize: CGFloat = 22
     }
 
     enum Font {
@@ -234,7 +232,8 @@ enum Theme {
     enum Header {
         static let spacing: CGFloat = 6
         static let icon: CGFloat = 11
-        static let glyph: CGFloat = 12
+        /// Drop's own app icon before the "Drop" label.
+        static let appIcon: CGFloat = 14
     }
 
     enum Progress {
@@ -272,15 +271,10 @@ enum Theme {
         static let groupSpacing: CGFloat = Space.l
         static let labelToCard: CGFloat = Space.xs
         static let labelInset: CGFloat = Space.xxs
-        /// Between a row's controls (the popup's Install to row, Recent rows).
+        /// Between a row's controls (the popup's Install to row).
         static let rowSpacing: CGFloat = Space.s
         /// The ⓘ popover's text width.
         static let infoWidth: CGFloat = 260
-        /// The Recent sheet (Sheet primitive, list size).
-        static let sheetWidth: CGFloat = 560
-        static let sheetHeight: CGFloat = 480
-        /// Rows in the Recent sheet's list.
-        static let recentRowHeight: CGFloat = 44
     }
 
     /// The SettingsRow primitive: one setting, label left, control right.
@@ -429,7 +423,6 @@ enum Theme {
             static let badgeFrame: CGFloat = 96
             static let badge: CGFloat = 32
             static let badgeBorder: CGFloat = 3
-            static let badgeGlyph: CGFloat = 14
             static let badgeTrailing: CGFloat = 2
             static let badgeBottom: CGFloat = 6
             /// Board 4: two Login Items rows, Drop's switch on.
@@ -440,7 +433,6 @@ enum Theme {
             static let listRowSpacing: CGFloat = 10
             static let listIcon: CGFloat = 22
             static let listIconRadius: CGFloat = 6
-            static let listIconGlyph: CGFloat = 11
             static let listLineWidth: CGFloat = 80
             static let listNameFont = SwiftUI.Font.system(size: 12, weight: .semibold)
             static let switchWidth: CGFloat = 26

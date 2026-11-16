@@ -26,8 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let defaults: UserDefaults
 
     /// Test launches (`--watch`, `--destination`, `--trash`, `--demo`) keep their settings
-    /// and handled list apart from the real ones, so a test never shows up in Recent or
-    /// hides a real download.
+    /// and handled list apart from the real ones, so a test never hides a real
+    /// download.
     override init() {
         let launch = LaunchOptions()
         self.launch = launch
@@ -90,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return AnyView(EmptyView()) }
             return AnyView(
                 SettingsView(
-                    preferences: self.preferences, recent: self.store.recent,
+                    preferences: self.preferences,
                     changeFolder: { [weak self] in self?.chooseWatchedFolder() },
                     setOpenAtLogin: { [weak self] in self?.setLoginItem($0) },
                     setOpensDiskImages: { [weak self] in self?.setOpensDiskImages($0) },
@@ -107,6 +107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.showSettingsOrOnboarding() }
             }
         }
+
+        MainMenu.install(settingsTarget: self, settingsAction: #selector(openSettingsFromMenu(_:)))
 
         isLaunched = true
         for url in pendingOpens { controller.enqueue(url, origin: .opened) }
@@ -194,6 +196,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard open.runModal() == .OK else { return nil }
         return open.url
     }
+
+    /// Settings… (⌘,) in the main menu: opens Settings, centred.
+    @objc func openSettingsFromMenu(_ sender: Any?) { settings.show() }
 
     /// Opening Drop again, or clicking its Dock icon, brings forward the window that's
     /// open (onboarding first, then the install window, then Settings), else opens Settings.
