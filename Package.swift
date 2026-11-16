@@ -2,7 +2,8 @@
 import PackageDescription
 
 /// Drop's DMG reader: opens a disk image file without mounting it and lists and reads
-/// the files inside. The app target comes later; this package has no UI.
+/// the files inside, and the Drop app built on it (`DropApp`, assembled into `Drop.app` by
+/// `scripts/build-app.sh`).
 ///
 /// Layers, bottom up:
 /// - `ReaderCore`: the shared types every layer speaks (`BlockDevice`, `FileSystem`, `Entry`, `Extent`).
@@ -18,6 +19,7 @@ import PackageDescription
 ///   read-only and invisibly at a private mount point and reads the volume as a `FileSystem`.
 /// - `Installer`: the pipeline the app drives: one `InstallSession` per DMG, from reading
 ///   through the licence, background staging and the check to the final rename.
+/// - `DropApp`: the menu bar app: Downloads watcher, the install panel, Settings.
 let package = Package(
     name: "Drop",
     platforms: [.macOS(.v15)],
@@ -26,6 +28,7 @@ let package = Package(
         .library(name: "Installer", targets: ["Installer"]),
         .executable(name: "dmg-inspect", targets: ["DMGInspect"]),
         .executable(name: "drop-impact", targets: ["DropImpact"]),
+        .executable(name: "Drop", targets: ["DropApp"]),
     ],
     targets: [
         .target(name: "ReaderCore"),
@@ -47,6 +50,13 @@ let package = Package(
         .target(name: "Installer", dependencies: ["DMGReader", "DiskImage", "Extractor", "Mounter", "Verifier"]),
         .executableTarget(name: "DMGInspect", dependencies: ["DMGReader", "Extractor", "Verifier"]),
         .executableTarget(name: "DropImpact", dependencies: ["Installer", "DiskImage", "Extractor"]),
+        .executableTarget(
+            name: "DropApp",
+            dependencies: ["Installer", "DiskImage", "Extractor", "Mounter", "Verifier"],
+            linkerSettings: [
+                .linkedFramework("AppKit"), .linkedFramework("SwiftUI"), .linkedFramework("ServiceManagement"),
+            ]
+        ),
         .testTarget(name: "ReaderCoreTests", dependencies: ["ReaderCore"]),
         .testTarget(name: "DiskImageTests", dependencies: ["DiskImage"]),
         .testTarget(name: "HFSPlusTests", dependencies: ["HFSPlus", "DiskImage"]),

@@ -1,0 +1,182 @@
+#if DEBUG
+    import AppKit
+    import DiskImage
+    import Installer
+    import SwiftUI
+    import Verifier
+
+    /// `--demo <state>`: shows one board with the boards' sample data (Linea, Tinkerpad,
+    /// Vaultr, Ledgerly), no real DMG, so every state can be screenshotted. Debug builds
+    /// only. Prints `DEMO_WINDOW <id>` for `screencapture -l`.
+    ///
+    /// States: main, preparing, waiting, installing, done, update, update-running, warning,
+    /// unsigned, refused, pkg, case, wontattach, licence, licence-one, password,
+    /// password-wrong, settings, menu, done-long (a 30-character app name).
+    @MainActor
+    enum Demo {
+        static let states = [
+            "main", "preparing", "waiting", "installing", "done", "update", "update-running", "warning", "unsigned",
+            "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
+            "settings", "menu", "done-long",
+        ]
+
+        private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
+        private static let tinkerPurple = Color(red: 0x8E / 255, green: 0x5B / 255, blue: 0xD8 / 255)
+        private static let megabyte: UInt64 = 1_000_000
+
+        private static var linea: AppSummary {
+            AppSummary(
+                bundleName: "Linea.app", name: "Linea", version: "2.4.1", bundleIdentifier: "com.example.linea",
+                size: 84 * megabyte, signer: "Linea Software Ltd", teamID: "ABCDE12345", isNotarized: true)
+        }
+
+        static func run(_ state: String, app: AppDelegate) {
+            if state == "settings" {
+                for (name, version, age) in [("Fieldnote", "5.0", 86_400.0), ("Linea", "2.4.1", 120.0)] {
+                    app.store.addRecent(
+                        RecentInstall(
+                            name: name, version: version, path: "/Applications/\(name).app",
+                            date: .now.addingTimeInterval(-age)))
+                }
+                app.settings.show()
+                report(app.settings.windowNumber ?? 0)
+                return
+            }
+            if state == "menu" {
+                app.statusItem.menuContent = {
+                    .init(
+                        isWatching: true, folderName: "Downloads",
+                        recent: [
+                            RecentInstall(
+                                name: "Linea", version: "2.4.1", path: "/Applications/Linea.app",
+                                date: .now.addingTimeInterval(-120)),
+                            RecentInstall(
+                                name: "Fieldnote", version: "5.0", path: "/Applications/Fieldnote.app",
+                                date: .now.addingTimeInterval(-86_400)),
+                        ])
+                }
+                app.statusItem.keep = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    print("DEMO_MENU")
+                    fflush(stdout)
+                    app.statusItem.openMenu()
+                }
+                return
+            }
+            let model = makeModel(state)
+            model.send = { action in
+                if action == .close || action == .notNow { NSApp.terminate(nil) }
+            }
+            app.statusItem.isBusy = true
+            Task {
+                // Let the new status item get its window and on-screen frame first.
+                try? await Task.sleep(for: .milliseconds(300))
+                app.panel.show(model)
+                try? await Task.sleep(for: .milliseconds(300))
+                report(app.panel.windowNumber)
+            }
+        }
+
+        private static func report(_ window: Int) {
+            print("DEMO_WINDOW \(window)")
+            fflush(stdout)
+        }
+
+        static func makeModel(_ state: String) -> PanelModel {
+            let image: String
+            switch state {
+            case "warning", "unsigned": image = "Tinkerpad-0.9.dmg"
+            case "pkg", "case", "wontattach": image = "Vaultr-Setup.dmg"
+            case "password", "password-wrong": image = "Ledgerly-Pro.dmg"
+            default: image = "Linea-2.4.1.dmg"
+            }
+            let model = PanelModel(
+                dmg: URL(filePath: "/Users/Shared/Downloads/\(image)"), origin: .watched(folderName: "Downloads"),
+                location: .applications, trashImage: true)
+            model.iconOverride = .tile(lineaBlue, symbol: "line.diagonal")
+            var linea = linea
+            switch state {
+            case "preparing":
+                var early = linea
+                early.signer = nil
+                early.isNotarized = false
+                model.state = .preparing(early, InstallProgress(bytesDone: 30 * megabyte, bytesTotal: 84 * megabyte))
+            case "waiting":
+                model.state = .waitingToPrepare(linea)
+            case "installing":
+                model.state = .installing(linea, InstallProgress(bytesDone: 44 * megabyte, bytesTotal: 84 * megabyte))
+            case "done-long":
+                linea = AppSummary(
+                    bundleName: "Extraordinarily Long App Name.app", name: "Extraordinarily Long App Name",
+                    version: "12.10.3", bundleIdentifier: "com.example.long", size: 84 * megabyte)
+                model.state = .ready(linea)
+                model.state = .installed(URL(filePath: "/Applications/Extraordinarily Long App Name.app"))
+                model.trashedImage = URL(filePath: "/Users/Shared/.Trash/\(image)")
+            case "done":
+                model.state = .ready(linea)
+                model.state = .installed(URL(filePath: "/Applications/Linea.app"))
+                model.trashedImage = URL(filePath: "/Users/Shared/.Trash/\(image)")
+            case "update", "update-running":
+                linea.update = .init(installedVersion: "2.3.0", developer: .same(teamID: "ABCDE12345"))
+                model.state = .ready(linea)
+                model.appIsRunning = state == "update-running"
+            case "warning", "unsigned":
+                model.iconOverride = .tile(tinkerPurple, symbol: "doc.text")
+                let tinkerpad = AppSummary(
+                    bundleName: "Tinkerpad.app", name: "Tinkerpad", version: "0.9",
+                    bundleIdentifier: "com.example.tinkerpad", size: 22 * megabyte, signer: "Tinker Labs")
+                model.state = .warning(tinkerpad, state == "warning" ? .notNotarized : .unsigned)
+            case "refused":
+                model.state = .refused(
+                    linea, .damaged(reason: "a sealed resource is missing", status: -67_054, path: nil))
+            case "pkg":
+                model.iconOverride = nil
+                model.state = .cannotInstall(.packageOnly(names: ["Vaultr.pkg"]))
+            case "case":
+                model.iconOverride = nil
+                model.state = .cannotInstall(
+                    .nameCollision(paths: ["Vaultr.app/Contents/README", "Vaultr.app/Contents/readme"]))
+            case "wontattach":
+                model.iconOverride = nil
+                model.state = .cannotInstall(.wontAttach("hdiutil: attach failed"))
+            case "licence", "licence-one":
+                model.state = .needsLicence(licence(several: state == "licence"))
+            case "password", "password-wrong":
+                model.iconOverride = nil
+                model.password = "hunter22"
+                model.state = .needsPassword(attempt: state == "password" ? 1 : 2)
+            default:
+                model.state = .ready(linea)
+            }
+            return model
+        }
+
+        private static func licence(several: Bool) -> LicenceAgreement {
+            let text = """
+                Linea Software Licence Agreement
+
+                Please read this licence carefully before installing Linea. By clicking Agree and Install you \
+                accept its terms.
+
+                1. Licence. Linea Software Ltd grants you a personal, non-exclusive licence to use Linea on any \
+                Mac you own or control.
+
+                2. Restrictions. You may not sell, rent or sublicense Linea, or remove its notices.
+
+                3. No warranty. Linea is provided as is, without warranty of any kind.
+                """
+            let english = LicenceAgreement.Language(
+                regionCode: 0, resourceID: 5000, isMultiByte: false,
+                body: .plain(bytes: Array(text.utf8), text: text), buttons: ["English"])
+            guard several else { return LicenceAgreement(defaultLanguageIndex: 0, languages: [english]) }
+            let german = LicenceAgreement.Language(
+                regionCode: 3, resourceID: 5001, isMultiByte: false,
+                body: .plain(bytes: [], text: "Linea Softwarelizenzvertrag"), buttons: ["Deutsch"])
+            let japanese = LicenceAgreement.Language(
+                regionCode: 14, resourceID: 5002, isMultiByte: true,
+                body: .plain(bytes: [], text: "Linea ソフトウェア使用許諾契約"), buttons: ["日本語"])
+            return LicenceAgreement(defaultLanguageIndex: 0, languages: [english, german, japanese])
+        }
+    }
+#endif

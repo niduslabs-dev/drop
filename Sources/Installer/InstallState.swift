@@ -115,6 +115,29 @@ public struct AppSummary: Sendable, Equatable {
         public var installedVersion: String?
         /// Team ID comparison with the installed copy; nil until the new copy is checked.
         public var developer: DeveloperMatch?
+
+        public init(installedVersion: String?, developer: DeveloperMatch?) {
+            self.installedVersion = installedVersion
+            self.developer = developer
+        }
+    }
+
+    /// For the app's previews and demo fixtures; sessions build summaries themselves.
+    public init(
+        bundleName: String, name: String, version: String?, bundleIdentifier: String?, size: UInt64,
+        iconFile: URL? = nil, signer: String? = nil, teamID: String? = nil, isNotarized: Bool = false,
+        update: Update? = nil
+    ) {
+        self.bundleName = bundleName
+        self.name = name
+        self.version = version
+        self.bundleIdentifier = bundleIdentifier
+        self.size = size
+        self.iconFile = iconFile
+        self.signer = signer
+        self.teamID = teamID
+        self.isNotarized = isNotarized
+        self.update = update
     }
 }
 

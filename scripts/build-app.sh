@@ -1,0 +1,74 @@
+#!/bin/sh
+# Builds Drop.app into .build/Drop.app: compiles the DropApp target through scripts/swift.sh,
+# assembles the bundle (Info.plist, a placeholder icon) and signs it ad hoc with the hardened
+# runtime. No keychain or signing identity is used; Developer ID signing comes with shipping.
+#
+# Usage: scripts/build-app.sh            release build
+#        scripts/build-app.sh --debug    debug build (has --demo for screenshots)
+set -eu
+cd "$(dirname "$0")/.."
+
+CONFIG=release
+[ "${1:-}" = "--debug" ] && CONFIG=debug
+
+VERSION=0.1.0
+BUILD_NUMBER=1
+MIN_MACOS=15.0
+APP=.build/Drop.app
+
+scripts/swift.sh build -c "$CONFIG" --product Drop
+BIN_DIR=$(scripts/swift.sh build -c "$CONFIG" --show-bin-path)
+
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN_DIR/Drop" "$APP/Contents/MacOS/Drop"
+
+cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>Drop</string>
+    <key>CFBundleIdentifier</key><string>dev.niduslabs.drop</string>
+    <key>CFBundleName</key><string>Drop</string>
+    <key>CFBundleDisplayName</key><string>Drop</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
+    <key>LSUIElement</key><true/>
+    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+    <key>NSHumanReadableCopyright</key><string>Nidus Labs</string>
+    <key>NSSupportsAutomaticTermination</key><false/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <!-- Listed in Open With, never the default unless the user turns on
+                 Settings > Open disk images with Drop. Not the generic
+                 com.apple.disk-image: DiskImageMounter doesn't claim it, so Launch
+                 Services would make Drop its default without asking. -->
+            <key>CFBundleTypeName</key><string>Disk Image</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.apple.disk-image-udif</string>
+                <string>com.apple.disk-image-sparse</string>
+                <string>com.apple.disk-image-sparse-bundle</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
+PLIST
+
+# Placeholder icon: the system's generic app icon, until the real one is drawn.
+GENERIC=/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns
+[ -f "$GENERIC" ] && cp "$GENERIC" "$APP/Contents/Resources/AppIcon.icns"
+
+codesign --force --sign - --options runtime --timestamp=none "$APP"
+codesign --verify --deep --strict "$APP"
+echo "Built $APP ($CONFIG)"

@@ -1,0 +1,244 @@
+import AppKit
+import Extractor
+import Mounter
+import ServiceManagement
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// Drop's lifecycle: no Dock icon or window (`LSUIElement`), a Downloads watcher, the
+/// temporary menu bar icon and the panel. Opening Drop again while it runs shows Settings.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Posted by a second copy of Drop that was started while this one runs.
+    static let showSettingsNotification = Notification.Name("dev.niduslabs.drop.showSettings")
+
+    let launch: LaunchOptions
+    let preferences: Preferences
+    let store: Store
+
+    /// Test launches (`--watch`, `--destination`, `--trash`, `--demo`) keep their settings
+    /// and handled list apart from the real ones, so a test never shows up in Recent or
+    /// hides a real download.
+    override init() {
+        let launch = LaunchOptions()
+        self.launch = launch
+        if launch.isTesting {
+            preferences = Preferences(defaults: UserDefaults(suiteName: Self.testSuite) ?? .standard)
+            store = Store(
+                directory: FileManager.default.temporaryDirectory.appending(
+                    path: Self.testSuite, directoryHint: .isDirectory))
+        } else {
+            preferences = Preferences()
+            store = Store()
+        }
+        super.init()
+    }
+
+    static let testSuite = "dev.niduslabs.drop.test"
+    private(set) var statusItem: StatusItemController!
+    private(set) var panel: PanelWindowController!
+    private(set) var controller: InstallController!
+    private(set) var settings: SettingsWindowController!
+    private var watcher: DownloadsWatcher?
+    private let onboarding = OnboardingCoordinator()
+    /// Pause Watching from the menu: until resumed or Drop restarts.
+    private var isPaused = false
+    /// Disk images opened before launch finished (Open With starts Drop with them).
+    private var pendingOpens: [URL] = []
+    private var isLaunched = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+            if let appearance = launch.appearance {
+                NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
+            }
+        #endif
+        statusItem = StatusItemController(keep: preferences.keepInMenuBar)
+        panel = PanelWindowController(anchor: { [weak self] in self?.statusItem.anchorFrame })
+        controller = InstallController(
+            preferences: preferences, store: store, launch: launch, panel: panel, statusItem: statusItem)
+        settings = SettingsWindowController { [weak self] in
+            guard let self else { return AnyView(EmptyView()) }
+            return AnyView(
+                SettingsView(
+                    preferences: self.preferences, recent: self.store.recent,
+                    changeFolder: { [weak self] in self?.chooseWatchedFolder() },
+                    setOpenAtLogin: { [weak self] in self?.setLoginItem($0) },
+                    setOpensDiskImages: { [weak self] in self?.setOpensDiskImages($0) }))
+        } onShow: { [weak self] in
+            self?.preferences.opensDiskImages = DiskImageHandler.isDropDefault
+        }
+        statusItem.menuContent = { [weak self] in
+            guard let self else { return .init(isWatching: false, folderName: "", recent: []) }
+            return .init(
+                isWatching: self.watcher?.isRunning ?? false, folderName: self.watchedFolderName,
+                recent: self.store.recent)
+        }
+        statusItem.onInstallFromImage = { [weak self] in self?.installFromImage() }
+        statusItem.onTogglePause = { [weak self] in self?.togglePause() }
+        statusItem.onSettings = { [weak self] in self?.settings.show() }
+        statusItem.onOpenRecent = { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: $0.path)]) }
+
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.showSettingsNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settings.show() }
+        }
+
+        isLaunched = true
+        for url in pendingOpens { controller.enqueue(url, origin: .opened) }
+        pendingOpens.removeAll()
+
+        #if DEBUG
+            if launch.probeHandler {
+                Task {
+                    let before = DiskImageHandler.isDropDefault
+                    let after = await DiskImageHandler.setDropDefault(true)
+                    print("PROBE before=\(before) after=\(after)")
+                    fflush(stdout)
+                }
+                return
+            }
+            if let demo = launch.demo {
+                Demo.run(demo, app: self)
+                return
+            }
+        #endif
+
+        sweepLeftovers()
+        if launch.manageLoginItem {
+            if !preferences.launchedBefore, preferences.openAtLogin { setLoginItem(true) }
+        } else {
+            Log.app.info("Login item left alone (test launch); status \(SMAppService.mainApp.status.rawValue)")
+        }
+        preferences.opensDiskImages = DiskImageHandler.isDropDefault
+        observePreferences()
+        onboarding.onFinish = { [weak self] in self?.updateWatcher() }
+        updateWatcher()
+    }
+
+    /// Open With › Drop, or a double-click when Drop is the default for disk images. An
+    /// explicit open always gets a panel, even for an image dismissed or installed before.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let images = urls.filter(\.isFileURL)
+        guard isLaunched else {
+            pendingOpens += images
+            return
+        }
+        for url in images { controller.enqueue(url, origin: .opened) }
+    }
+
+    private func setOpensDiskImages(_ on: Bool) {
+        preferences.opensDiskImages = on
+        Task {
+            preferences.opensDiskImages = await DiskImageHandler.setDropDefault(on)
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        settings.show()
+        return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        watcher?.stop()
+        controller?.detachInstallerMounts()
+    }
+
+    private var watchedFolder: URL { launch.watchFolder ?? preferences.watchedFolder }
+    private var watchedFolderName: String { FileManager.default.displayName(atPath: watchedFolder.path) }
+
+    /// Clears staging areas and hidden mounts a crash or force quit left behind.
+    private func sweepLeftovers() {
+        let destinations = launch.destination.map { [$0] } ?? InstallLocation.allCases.map(\.url)
+        for destination in destinations where FileManager.default.fileExists(atPath: destination.path) {
+            Extractor.sweepLeftovers(near: destination) { removed in
+                if removed > 0 { Log.app.info("Removed \(removed) leftover staging areas") }
+            }
+        }
+        Task.detached(priority: .utility) {
+            let devices = HiddenMount.sweepLeftoverMounts()
+            if !devices.isEmpty { Log.app.info("Detached \(devices.count) leftover hidden mounts") }
+        }
+    }
+
+    // MARK: Watching
+
+    /// Starts or stops the watcher to match the settings. Waits for onboarding: starting it
+    /// is Drop's first access to the watched folder (see `OnboardingCoordinator`).
+    private func updateWatcher() {
+        let wanted = onboarding.isComplete && preferences.askOnNewImage && !isPaused
+        if let watcher, watcher.folder == watchedFolder.standardizedFileURL, watcher.isRunning == wanted { return }
+        watcher?.stop()
+        watcher = nil
+        guard wanted else { return }
+        let name = watchedFolderName
+        let watcher = DownloadsWatcher(folder: watchedFolder) { [weak self] url in
+            self?.controller.enqueue(url, origin: .watched(folderName: name))
+        }
+        watcher.start()
+        self.watcher = watcher
+    }
+
+    private func togglePause() {
+        isPaused.toggle()
+        updateWatcher()
+    }
+
+    /// Re-applies settings whenever one changes.
+    private func observePreferences() {
+        withObservationTracking {
+            _ = preferences.askOnNewImage
+            _ = preferences.watchedFolder
+            _ = preferences.keepInMenuBar
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateWatcher()
+                if self.statusItem.keep != self.preferences.keepInMenuBar {
+                    self.statusItem.keep = self.preferences.keepInMenuBar
+                }
+                self.observePreferences()
+            }
+        }
+    }
+
+    private func chooseWatchedFolder() {
+        let open = NSOpenPanel()
+        open.canChooseDirectories = true
+        open.canChooseFiles = false
+        open.directoryURL = preferences.watchedFolder
+        open.prompt = "Watch"
+        guard open.runModal() == .OK, let url = open.url else { return }
+        preferences.watchedFolder = url
+    }
+
+    private func installFromImage() {
+        let open = NSOpenPanel()
+        open.allowedContentTypes = [UTType(filenameExtension: "dmg") ?? .diskImage]
+        open.allowsMultipleSelection = true
+        open.prompt = "Install"
+        NSApp.activate()
+        guard open.runModal() == .OK else { return }
+        for url in open.urls { controller.enqueue(url, origin: .opened) }
+    }
+
+    // MARK: Login item
+
+    /// Registers or removes the login item. A failure (an ad hoc build outside
+    /// Applications, or the user turned it off in System Settings) is logged, never shown:
+    /// the switch stays as the user set it and Drop works either way while it runs.
+    func setLoginItem(_ on: Bool) {
+        guard launch.manageLoginItem else { return }
+        do {
+            if on {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            Log.app.info("Login item \(on ? "on" : "off"); status \(SMAppService.mainApp.status.rawValue)")
+        } catch {
+            Log.app.error("Login item \(on ? "register" : "unregister") failed: \(error, privacy: .public)")
+        }
+    }
+}

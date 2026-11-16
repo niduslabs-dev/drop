@@ -20,6 +20,21 @@ public struct LicenceAgreement: Sendable, Hashable {
         /// The `STR#` strings when present, decoded: language name, Agree, Disagree, Print,
         /// Save, then the prompt shown above the buttons. Empty when the image has none.
         public let buttons: [String]
+
+        /// For the app's demo fixtures; images are read with `init?(resources:)`.
+        public init(regionCode: UInt16, resourceID: Int, isMultiByte: Bool, body: Body, buttons: [String]) {
+            self.regionCode = regionCode
+            self.resourceID = resourceID
+            self.isMultiByte = isMultiByte
+            self.body = body
+            self.buttons = buttons
+        }
+    }
+
+    /// For the app's demo fixtures.
+    public init(defaultLanguageIndex: Int, languages: [Language]) {
+        self.defaultLanguageIndex = defaultLanguageIndex
+        self.languages = languages
     }
 
     public enum Body: Sendable, Hashable {
