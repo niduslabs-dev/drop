@@ -14,8 +14,18 @@ enum Fixtures {
     struct Missing: Error, CustomStringConvertible {
         let path: String
         var description: String {
-            "APFS fixture missing: \(path). Run scripts/fixtures-apfs.sh (add --corpus for the corpus tests)."
+            "APFS fixture missing: \(path). Run scripts/fixtures-apfs.sh."
         }
+    }
+
+    /// The first `.dmg` in `.claude/samples/<name>/`, the untrusted real-app corpus.
+    static func sample(_ name: String) throws -> String {
+        let folder = packageRoot.appendingPathComponent(".claude/samples/\(name)")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        guard let dmg = files.sorted().first(where: { $0.hasSuffix(".dmg") }) else {
+            throw Missing(path: folder.path)
+        }
+        return folder.appendingPathComponent(dmg).path
     }
 
     static func path(_ name: String) throws -> String {
@@ -58,31 +68,6 @@ struct ManifestRow: Decodable {
 
     static let compressedFlag: UInt32 = 0x20
     var isCompressed: Bool { flags & Self.compressedFlag != 0 }
-}
-
-/// Finds the APFS container inside a raw GPT disk (as `hdiutil convert -format UDTO`
-/// writes it): the partition whose first sector carries `NXSB` at byte 32.
-func apfsPartition(of disk: any BlockDevice) throws -> SliceDevice {
-    let sector: UInt64 = 512
-    let header = ByteReader(try disk.read(at: sector, count: Int(sector)))
-    guard try header.slice(0, 8) == Array("EFI PART".utf8) else {
-        throw ReaderError.unsupportedPartitionScheme("no GPT header")
-    }
-    let entriesLBA = try header.le64(72)
-    let entryCount = Int(try header.le32(80))
-    let entrySize = Int(try header.le32(84))
-    let table = ByteReader(try disk.read(at: entriesLBA * sector, count: entryCount * entrySize))
-    for index in 0..<entryCount {
-        let base = index * entrySize
-        let first = try table.le64(base + 32)
-        let last = try table.le64(base + 40)
-        guard first != 0, last >= first else { continue }
-        let magic = ByteReader(try disk.read(at: first * sector + 32, count: 4))
-        if try magic.le32(0) == Format.Container.magicValue {
-            return try SliceDevice(base: disk, start: first * sector, size: (last - first + 1) * sector)
-        }
-    }
-    throw ReaderError.unsupportedFileSystem("no APFS partition")
 }
 
 /// Every entry under the root, keyed by its path's UTF-8 bytes (names compared exactly,

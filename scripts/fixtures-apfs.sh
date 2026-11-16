@@ -2,7 +2,6 @@
 # Builds the APFS test fixtures into .build/fixtures/apfs/ (gitignored).
 #
 #   scripts/fixtures-apfs.sh            # synthetic images (case-insensitive and case-sensitive)
-#   scripts/fixtures-apfs.sh --corpus   # also raw copies of the GIMP, Warp and Zed sample DMGs
 #
 # Outputs:
 #   src/                      the source folder handed to `hdiutil create -srcfolder`
@@ -10,7 +9,6 @@
 #   ci.img, cs.img            raw APFS containers (no partition map, NXSB at byte 32)
 #   ci-manifest.jsonl, ...    manifest of each image as macOS mounts it: the tests' ground truth
 #   preserved.txt             what hdiutil kept from src/ (sparse, hard links, compression, xattrs)
-#   corpus/*.img              raw (UDTO) copies of the APFS samples, GPT inside
 #
 # After `hdiutil create` each image is attached read-write once to add what a plain copy
 # can't produce reliably: a file fragmented into many extents, a sparse file written in
@@ -230,24 +228,11 @@ PY
     cat "$OUT/preserved.txt"
 }
 
-build_corpus() {
-    mkdir -p "$OUT/corpus"
-    local name dmg
-    for name in gimp warp zed; do
-        dmg="$(ls "$ROOT/.claude/samples/$name/"*.dmg | head -1)"
-        rm -f "$OUT/corpus/$name.img" "$OUT/corpus/$name.img.cdr"
-        hdiutil convert -quiet "$dmg" -format UDTO -o "$OUT/corpus/$name.img"
-        [ -f "$OUT/corpus/$name.img.cdr" ] && mv "$OUT/corpus/$name.img.cdr" "$OUT/corpus/$name.img"
-        echo "corpus: $OUT/corpus/$name.img"
-    done
-}
-
 mkdir -p "$OUT" "$WORK"
 make_source
 manifest "$SRC" "$OUT/source-manifest.jsonl"
 build_image ci "APFS"
 build_image cs "Case-sensitive APFS"
 report_preserved
-if [ "${1:-}" = "--corpus" ]; then build_corpus; fi
 rm -rf "$WORK"
 echo "fixtures ready in $OUT"

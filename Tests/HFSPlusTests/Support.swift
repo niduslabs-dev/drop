@@ -7,12 +7,22 @@ import Testing
 
 /// Where `scripts/fixtures-hfsplus.sh` puts its output.
 enum Fixtures {
-    static let directory = URL(fileURLWithPath: #filePath)
+    static let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent(".build/fixtures/hfsplus")
+    static let directory = packageRoot.appendingPathComponent(".build/fixtures/hfsplus")
 
     static let missingMessage: Comment =
         "HFS+ fixtures missing: run scripts/fixtures-hfsplus.sh from the package root first"
+
+    /// The first `.dmg` in `.claude/samples/<name>/`, the untrusted real-app corpus.
+    static func sample(_ name: String) throws -> String {
+        let folder = packageRoot.appendingPathComponent(".claude/samples/\(name)")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        guard let dmg = files.sorted().first(where: { $0.hasSuffix(".dmg") }) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: folder.path])
+        }
+        return folder.appendingPathComponent(dmg).path
+    }
 
     static func path(_ name: String) throws -> String {
         let path = directory.appendingPathComponent(name).path

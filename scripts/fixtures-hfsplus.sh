@@ -7,7 +7,6 @@
 #                                  the tests compare the reader against these
 #   source.jsonl                   the same listing of the source folder
 #   preservation.txt               how the mounted volumes differ from the source folder
-#   corpus/<name>.cdr              raw copies of three HFS+ sample DMGs (skipped if missing)
 #
 # Mounts only to build and verify, always -nobrowse, and detaches by device node.
 set -euo pipefail
@@ -16,7 +15,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.build/fixtures/hfsplus"
 STAGE="$OUT/DropHFS"
 VOLNAME="DropHFS"
-SAMPLES="$ROOT/.claude/samples"
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -279,17 +277,5 @@ for p, e in img.items():
 print("hard link groups in image:", list(inos.values()))
 PY
 cat "$OUT/preservation.txt"
-
-# ---------------------------------------------------------------- corpus (opt-in tests)
-mkdir -p "$OUT/corpus"
-for pair in rectangle:Rectangle2.0.4.dmg slack:Slack-4.53.287-macOS.dmg firefox:Firefox-160.0.dmg; do
-    name="${pair%%:*}"
-    dmg="$SAMPLES/$name/${pair#*:}"
-    if [ -f "$dmg" ]; then
-        hdiutil convert -quiet "$dmg" -format UDTO -o "$OUT/corpus/$name"
-    else
-        echo "corpus: $dmg missing, skipped"
-    fi
-done
 
 echo "fixtures ready in $OUT"

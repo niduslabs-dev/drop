@@ -22,6 +22,8 @@ public struct DecodePolicy: Sendable, Hashable {
     public static let defaultMaxDecoders = max(1, ProcessInfo.processInfo.activeProcessorCount - 1)
     /// Decoders for background staging, from the plan's "gentle in the background" rule.
     public static let backgroundMaxDecoders = 2
+    /// Decoders for the `utility` preset: the plan's "2–3 decode threads" upper end.
+    public static let utilityMaxDecoders = 3
     /// Enough to keep every decoder busy on 1 MiB chunks and most of them on 4 MiB ones,
     /// while staying inside the read-ahead share of the 64 MiB cache.
     public static let defaultReadAheadBytes = 32 * 1024 * 1024
@@ -32,6 +34,12 @@ public struct DecodePolicy: Sendable, Hashable {
     /// Two decoders at background QoS, with their disk reads throttled.
     public static let background = DecodePolicy(
         maxDecoders: backgroundMaxDecoders, qos: .background, readAheadBytes: defaultReadAheadBytes)
+    /// Three decoders at utility QoS: a candidate for background staging that may run on
+    /// performance cores (background QoS stays on efficiency cores) but still yields to
+    /// user-initiated work. Its disk reads get utility QoS's I/O tier, not an explicit
+    /// throttle. Compared with `background` in `.claude/research/impact-bench.md`.
+    public static let utility = DecodePolicy(
+        maxDecoders: utilityMaxDecoders, qos: .utility, readAheadBytes: defaultReadAheadBytes)
 
     public init(maxDecoders: Int, qos: DispatchQoS.QoSClass, readAheadBytes: Int) {
         self.maxDecoders = max(1, maxDecoders)

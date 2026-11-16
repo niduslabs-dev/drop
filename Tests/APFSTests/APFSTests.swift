@@ -1,3 +1,4 @@
+import DiskImage
 import Foundation
 import ReaderCore
 import Testing
@@ -248,7 +249,7 @@ private func readExtents(_ fs: any FileSystem, _ extents: [Extent], size: UInt64
     }
 }
 
-/// The APFS sample DMGs, converted to raw by `scripts/fixtures-apfs.sh --corpus`.
+/// The APFS sample DMGs in `.claude/samples/`, opened directly through `DiskImage`.
 @Suite(.enabled(if: Fixtures.corpusEnabled || Fixtures.timingEnabled)) struct APFSCorpusTests {
     struct SurveyCounts {
         let files: Int
@@ -272,8 +273,8 @@ private func readExtents(_ fs: any FileSystem, _ extents: [Extent], size: UInt64
     }
 
     static func open(_ name: String) throws -> APFSVolume {
-        let disk = try FileDevice(path: try Fixtures.path("corpus/\(name).img"))
-        return try APFSContainer(device: try apfsPartition(of: disk)).openDefaultVolume()
+        let image = try DiskImage.open(path: try Fixtures.sample(name))
+        return try APFSContainer(device: try image.fileSystem().device).openDefaultVolume()
     }
 
     @Test(.enabled(if: Fixtures.corpusEnabled), arguments: ["gimp", "warp", "zed"])

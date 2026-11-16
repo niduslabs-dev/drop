@@ -12,6 +12,8 @@ A Swift package (`Package.swift`), no Xcode project yet:
 - `DMGReader`: opens a `.dmg` and returns its filesystem. `dmg-inspect`: a CLI over it.
 - `Extractor`: stages an app out of a `FileSystem` (4 workers, POSIX writes, xattrs, quarantine with the do-not-translocate flag) and installs it by rename or atomic swap.
 - `Verifier`: signing info, strict validation, Gatekeeper assessment, the `Verdict` the panel shows, same-developer check, and stapling a DMG's ticket into an app. Use the `async` overloads from tasks; the sync ones stall under Swift concurrency.
+- `Installer`: `InstallSession`, the actor the app drives per DMG: reading → licence → background staging and check → ready/warning/refused → install. States in `InstallState.swift`.
+- `drop-impact`: the background-impact benchmark's load and staging processes, run by `.claude/research/scripts/impact_bench.py` (results in `.claude/research/impact-bench.md`).
 
 ## Commands
 
@@ -19,8 +21,8 @@ Homebrew's LLVM env breaks Xcode builds, so build through `scripts/swift.sh`, wh
 
 ```sh
 scripts/swift.sh build
-scripts/swift.sh test                 # unit tests; fixtures first: scripts/fixtures-*.sh
-DROP_CORPUS=1 scripts/swift.sh test   # also the 34 real DMGs in .claude/samples/
+scripts/swift.sh test                 # unit tests; fixtures first: scripts/fixtures-*.sh (installer after verifier)
+scripts/corpus.sh                     # also the 34 real DMGs in .claude/samples/ (makes and deletes 4.4 GB of reference copies)
 scripts/swift.sh run dmg-inspect <file.dmg> [--tree]
 ```
 

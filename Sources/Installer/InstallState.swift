@@ -1,0 +1,142 @@
+import DiskImage
+import Extractor
+import Foundation
+import ReaderCore
+import Verifier
+
+/// What the panel shows for one DMG, in the order a session moves through it:
+///
+/// ```
+/// reading ─▶ needsLicence ─▶ preparing ─▶ ready ───────────▶ installing ─▶ installed
+///    │            │              │      ├▶ warning ──(install)─▶ installing
+///    │            │              │      └▶ refused
+///    ├▶ cannotInstall / needsMountFallback / failed (from reading or preparing)
+///    └─ cancel() or decline() from any state before installed ─▶ cancelled
+/// ```
+///
+/// `install()` during `preparing` moves straight to `installing` (staging finishes at full
+/// speed, then the app moves into place), unless the verdict turns out to be a warning or a
+/// refusal: then the session stops at `warning` or `refused` and waits, because Install
+/// Anyway is a separate decision the user hasn't made yet.
+public enum InstallState: Sendable, Equatable {
+    /// Opening the image and reading its catalog. Usually under 0.1 s.
+    case reading
+    /// The image carries a licence agreement. Nothing is staged until `acceptLicence()`;
+    /// `decline()` ends the session.
+    case needsLicence(LicenceAgreement)
+    /// Staging and checking the app in the background. The summary already has the name,
+    /// version, bundle ID, size and installed version; the signer fields fill in at `ready`.
+    case preparing(AppSummary, InstallProgress)
+    /// Notarized and intact: Install is a rename.
+    case ready(AppSummary)
+    /// "Apple hasn't checked this app": `install()` here is Install Anyway.
+    case warning(AppSummary, Verdict.Warning)
+    /// Hard stop. The staged copy is already deleted and the installed copy was never touched.
+    case refused(AppSummary, Verdict.Refusal)
+    /// Not something Drop installs (a package, several apps, none), or an image that
+    /// doesn't open at all. The panel offers "Open disk image" or Installer instead.
+    case cannotInstall(CannotInstallReason)
+    /// The image is valid but Drop can't read it itself (encrypted, sparse, an unknown
+    /// compression, a decmpfs file). `InstallOptions.mountFallback` was told; the hidden
+    /// mount is a later step.
+    case needsMountFallback(ReaderError)
+    /// Install was clicked: finishing staging at full speed, then moving into place.
+    case installing(AppSummary, InstallProgress)
+    case installed(URL)
+    case cancelled
+    case failed(InstallFailure)
+
+    /// True when the session will never change state again.
+    public var isFinal: Bool {
+        switch self {
+        case .installed, .cancelled, .failed, .refused, .cannotInstall, .needsMountFallback: true
+        case .reading, .needsLicence, .preparing, .ready, .warning, .installing: false
+        }
+    }
+}
+
+/// Bytes of the app written so far. Coalesced to at most `InstallSession.progressSteps`
+/// updates per stage, so the panel can bind to it directly.
+public struct InstallProgress: Sendable, Equatable {
+    public let bytesDone: UInt64
+    public let bytesTotal: UInt64
+
+    public init(bytesDone: UInt64, bytesTotal: UInt64) {
+        self.bytesDone = bytesDone
+        self.bytesTotal = bytesTotal
+    }
+
+    /// 0 to 1; an empty app counts as done.
+    public var fraction: Double { bytesTotal == 0 ? 1 : Double(bytesDone) / Double(bytesTotal) }
+}
+
+/// What the panel says about the app. Built in two passes: what the image's catalog and
+/// `Info.plist` tell before staging (shown at once), then what the staged copy's signature
+/// and Gatekeeper tell.
+public struct AppSummary: Sendable, Equatable {
+    /// The bundle's folder name in the image, such as "Rectangle.app"; also its name once installed.
+    public let bundleName: String
+    /// `CFBundleDisplayName`, else `CFBundleName`, else the folder name without `.app`.
+    public var name: String
+    /// `CFBundleShortVersionString`, the version people know.
+    public var version: String?
+    public var bundleIdentifier: String?
+    /// Sum of the app's file sizes, from the image's catalog.
+    public var size: UInt64
+    /// The `.icns` named by `CFBundleIconFile`, inside the staged copy. Nil until staged,
+    /// and for apps whose icon lives only in an asset catalog.
+    public var iconFile: URL?
+    /// The signing certificate's organisation (or its common name when it has none).
+    public var signer: String?
+    public var teamID: String?
+    /// Gatekeeper accepts it as checked by Apple (notarized, Apple's own, or App Store).
+    public var isNotarized: Bool
+    /// Set when an app of the same name is already in the destination.
+    public var update: Update?
+
+    public struct Update: Sendable, Equatable {
+        public var installedVersion: String?
+        /// Team ID comparison with the installed copy; nil until the new copy is checked.
+        public var developer: DeveloperMatch?
+    }
+}
+
+public enum CannotInstallReason: Sendable, Equatable {
+    /// Only installer packages: the panel hands these to Installer.
+    case packageOnly(names: [String])
+    /// No `.app` and no package at the top level.
+    case noApp
+    /// More than one app (v2 scope).
+    case multipleApps(names: [String])
+    /// Names in the app that the destination volume can't keep apart (case or
+    /// normalisation). `paths` are from the app's name down.
+    case nameCollision(paths: [String])
+    /// The image is damaged or not a disk image at all.
+    case unreadable(String)
+}
+
+/// Why a session stopped with `failed`.
+public enum InstallFailure: Error, Sendable, Equatable {
+    case extractor(ExtractorError)
+    case reader(ReaderError)
+    case other(String)
+
+    init(_ error: any Error) {
+        switch error {
+        case let error as ExtractorError: self = .extractor(error)
+        case let error as ReaderError: self = .reader(error)
+        default: self = .other(String(describing: error))
+        }
+    }
+}
+
+/// How long each phase took, for diagnostics and the background-impact benchmark.
+/// Seconds from `start()`; nil for phases not reached.
+public struct InstallTimings: Sendable, Equatable {
+    public var opened: Double?
+    public var stagingStarted: Double?
+    public var staged: Double?
+    public var verified: Double?
+    /// When `install()` boosted a stage in progress.
+    public var boosted: Double?
+}
