@@ -230,3 +230,25 @@ public struct InstallTimings: Sendable, Equatable {
     public var mounted: Double?
     public var unmounted: Double?
 }
+
+extension InstallState {
+    /// The same state with the summary's installed copy replaced; states without a summary
+    /// are returned as they are.
+    func replacingUpdate(_ update: AppSummary.Update?) -> InstallState {
+        func with(_ summary: AppSummary) -> AppSummary {
+            var summary = summary
+            summary.update = update
+            return summary
+        }
+        switch self {
+        case .identified(let summary): return .identified(with(summary))
+        case .preparing(let summary, let progress): return .preparing(with(summary), progress)
+        case .waitingToPrepare(let summary): return .waitingToPrepare(with(summary))
+        case .ready(let summary): return .ready(with(summary))
+        case .warning(let summary, let warning): return .warning(with(summary), warning)
+        case .refused(let summary, let refusal): return .refused(with(summary), refusal)
+        case .installing(let summary, let progress): return .installing(with(summary), progress)
+        case .reading, .needsLicence, .needsPassword, .cannotInstall, .installed, .cancelled, .failed: return self
+        }
+    }
+}

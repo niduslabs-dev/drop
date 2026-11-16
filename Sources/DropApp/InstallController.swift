@@ -18,6 +18,8 @@ final class InstallController {
     private var current: PanelModel?
     private var session: InstallSession?
     private var updatesTask: Task<Void, Never>?
+    /// The current session's destination changes, in order; Install waits for them.
+    private var switchTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     /// Images attached for Open Installer; kept until Installer quits or Drop does.
     private var installerMounts: [HiddenMount] = []
@@ -43,8 +45,28 @@ final class InstallController {
         }
     }
 
-    /// The destination folder: `--destination` in tests, else the chosen location.
-    private func destination(for location: InstallLocation) -> URL { launch.destination ?? location.url }
+    /// The destination folder: `--home-destination` or `--destination` in tests, else the
+    /// chosen location.
+    private func destination(for location: InstallLocation) -> URL {
+        let home = location == .homeApplications ? launch.homeDestination : nil
+        return home ?? launch.destination ?? location.url
+    }
+
+    /// The folder name the panel shows: the location's, or a test folder's own name.
+    private func destinationName(for location: InstallLocation) -> String {
+        launch.destination == nil && launch.homeDestination == nil
+            ? location.shortName : destination(for: location).lastPathComponent
+    }
+
+    /// The destination for `location`, made first when it is `~/Applications` and missing
+    /// (a test folder is never made).
+    private func preparedDestination(for location: InstallLocation) -> URL {
+        let destination = destination(for: location)
+        if location == .homeApplications, !launch.usesTestFolders {
+            try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        }
+        return destination
+    }
 
     // MARK: Queue
 
@@ -65,7 +87,7 @@ final class InstallController {
         let model = PanelModel(
             dmg: next.url, origin: next.origin, location: preferences.installLocation,
             trashImage: preferences.trashImage)
-        if let destination = launch.destination { model.destinationName = destination.lastPathComponent }
+        model.destinationName = destinationName(for: model.location)
         model.send = { [weak self, weak model] action in
             guard let self, let model else { return }
             self.handle(action, for: model)
@@ -80,10 +102,7 @@ final class InstallController {
     }
 
     private func startSession(for model: PanelModel) {
-        let destination = destination(for: model.location)
-        if model.location == .homeApplications, launch.destination == nil {
-            try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        }
+        let destination = preparedDestination(for: model.location)
         let trashFolder = launch.trashFolder
         let options = InstallOptions(
             destination: destination, stagingPriority: model.origin == .opened ? .userInitiated : .background,
@@ -206,7 +225,11 @@ final class InstallController {
     private func install(_ model: PanelModel) {
         guard let session, !model.isBusy else { return }
         model.isBusy = true
+        let pendingSwitch = switchTask
         Task {
+            // A location change in flight finishes first, so the running-copy check and the
+            // install both see the new destination.
+            await pendingSwitch?.value
             var reopen = false
             if let summary = model.summary, summary.update != nil, let bundleID = summary.bundleIdentifier,
                 let running = runningCopy(bundleID: bundleID, bundleName: summary.bundleName, model: model)
@@ -294,16 +317,25 @@ final class InstallController {
         return target
     }
 
+    /// Points the running session at the new folder (`InstallSession.changeDestination`):
+    /// the staged copy, its check and an accepted licence carry over, and the panel switches
+    /// between a new install and an update from the session's next state.
     private func changeLocation(_ model: PanelModel, to location: InstallLocation) {
-        guard location != model.location, let old = session else { return }
+        guard location != model.location, let session else { return }
         model.location = location
-        if launch.destination == nil { model.destinationName = location.shortName }
-        session = nil
-        updatesTask?.cancel()
-        Task {
-            await old.cancel()
-            guard current === model else { return }
-            startSession(for: model)
+        model.destinationName = destinationName(for: location)
+        let destination = preparedDestination(for: location)
+        let previous = switchTask
+        switchTask = Task { [weak self] in
+            await previous?.value
+            await session.changeDestination(destination)
+            if let took = await session.lastDestinationChange {
+                Log.app.info(
+                    "location switch to \(destination.path, privacy: .public) took \(took.milliseconds, privacy: .public) ms"
+                )
+            }
+            guard let self, self.session === session else { return }
+            self.refreshRunningApp(for: model)
         }
     }
 
@@ -321,6 +353,7 @@ final class InstallController {
         if let session, !model.state.isFinal { Task { await session.cancel() } }
         updatesTask?.cancel()
         updatesTask = nil
+        switchTask = nil
         session = nil
         current = nil
         panel.close()
@@ -428,5 +461,12 @@ final class InstallController {
 extension InstallState {
     var isLicence: Bool {
         if case .needsLicence = self { true } else { false }
+    }
+}
+
+extension Duration {
+    /// Milliseconds, for logs.
+    fileprivate var milliseconds: Double {
+        Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1e15
     }
 }

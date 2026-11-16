@@ -273,7 +273,7 @@ public enum Extractor {
 
     /// Calls `body` with every path under and including `root`, parents first, never
     /// following symlinks.
-    private static func forEachItem(under root: String, _ body: (String) throws -> Void) throws {
+    static func forEachItem(under root: String, _ body: (String) throws -> Void) throws {
         try body(root)
         var info = stat()
         guard lstat(root, &info) == 0 else { throw ExtractorError.io(errno: errno, operation: "lstat", path: root) }
@@ -289,7 +289,7 @@ public enum Extractor {
 
     /// Runs `body` with the owner write bit set on `path`, then restores its mode. Setting
     /// an xattr needs write permission, and staged apps keep their read-only items.
-    private static func withOwnerWrite(_ path: String, _ body: () throws -> Void) throws {
+    static func withOwnerWrite(_ path: String, _ body: () throws -> Void) throws {
         var info = stat()
         guard lstat(path, &info) == 0 else { throw ExtractorError.io(errno: errno, operation: "lstat", path: path) }
         let mode = info.st_mode & mode_t(Writer.permissionMask)

@@ -49,6 +49,16 @@ public struct InstallOptions: Sendable {
     var verify: @Sendable (_ app: URL, _ qos: DispatchQoS.QoSClass) async -> Verdict = {
         await Verifier.verdict(app: $0, qos: $1)
     }
+    /// Which volume a folder is on, for `changeDestination`: two folders with the same value
+    /// can share a staged copy. `URLResourceKey.volumeIdentifierKey` in the app; tests
+    /// replace it to pretend a scratch folder is another volume (tests never mount one).
+    var volumeIdentity: @Sendable (URL) -> String? = { url in
+        // A fresh URL, so no cached resource value from an earlier lookup is reused.
+        let fresh = URL(filePath: url.path, directoryHint: .isDirectory)
+        return (try? fresh.resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier.map {
+            String(describing: $0)
+        }
+    }
 
     public init(
         destination: URL, stagingPriority: StageOptions.Priority = .background,
@@ -94,12 +104,36 @@ public actor InstallSession {
     /// Progress updates per stage at most: one per percent.
     public static let progressSteps = 100
 
-    public private(set) var state: InstallState = .reading {
-        didSet {
-            continuation.yield(state)
-            if state.isFinal { continuation.finish() }
+    /// Every state is published with the installed copy as it is at the current
+    /// destination, once `changeDestination` has looked there (`installedCopy`).
+    public private(set) var state: InstallState {
+        get { published }
+        set {
+            published = installedCopy.map { newValue.replacingUpdate($0) } ?? newValue
+            continuation.yield(published)
+            if published.isFinal { continuation.finish() }
         }
     }
+    private var published: InstallState = .reading
+    /// Where the app goes: `options.destination` until `changeDestination(_:)`.
+    public private(set) var destination: URL
+    /// The installed copy at `destination`, read again after each destination change (and
+    /// once the verdict is known); nil until the first change, when the pipeline's own read
+    /// stands. `.some(nil)` means no copy there.
+    private var installedCopy: AppSummary.Update??
+    /// The staged copy's verdict, kept so a destination change never checks again.
+    private var verdict: Verdict?
+    /// True once the pipeline has published `ready` or `warning`: from then on a destination
+    /// change moves the staged copy itself, instead of leaving it to the pipeline's end.
+    private var settled = false
+    /// The rename into place has begun; the destination is fixed from here.
+    private var moving = false
+    /// Destination changes run one after another; `install()` and `cancel()` wait for them.
+    private var switchTask: Task<Void, Never>?
+    /// For tests and the app's log: how long the last `changeDestination` took, and how many
+    /// times the staged copy was copied to another volume.
+    public private(set) var lastDestinationChange: Duration?
+    private(set) var relocations = 0
     public private(set) var timings = InstallTimings()
 
     private let continuation: AsyncStream<InstallState>.Continuation
@@ -140,6 +174,7 @@ public actor InstallSession {
     public init(dmg: URL, options: InstallOptions) {
         self.dmg = dmg
         self.options = options
+        destination = options.destination
         (updates, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
     }
 
@@ -174,6 +209,9 @@ public actor InstallSession {
     /// `InstallState`). In `warning` it is Install Anyway. Elsewhere it does nothing.
     /// Returns once the session settles: installed, failed, or waiting in `warning`.
     public func install() async {
+        // A destination change in flight finishes first: the staged copy may be on its way
+        // to the new volume.
+        await switchTask?.value
         switch state {
         case .identified(let summary), .preparing(let summary, _), .waitingToPrepare(let summary):
             installRequested = true
@@ -207,6 +245,7 @@ public actor InstallSession {
         answerLicence(false)
         answerPassword(nil)
         runTask?.cancel()
+        await switchTask?.value
         await runTask?.value
         await installTask?.value
         if let staged {
@@ -226,6 +265,148 @@ public actor InstallSession {
     /// The popup's Not now: the same as `cancel()`.
     public func notNow() async { await cancel() }
 
+    /// Installs into `url` instead, without starting over: the licence is never asked again
+    /// and the image isn't read again.
+    ///
+    /// - Always looks at the installed copy in `url` (its version, and once the verdict is
+    ///   known its developer against the staged app's) and publishes the current state with
+    ///   it, so the panel switches between a new install and an update.
+    /// - Staged copy on the same volume as `url`: kept as it is, with its ticket, quarantine
+    ///   and verdict. Nothing else runs; the rename at install works from any folder there.
+    /// - Another volume: copied into a new staging area there (`Extractor.copy`), its
+    ///   cdhashes checked against the verdict's, then the old area is deleted. No new
+    ///   signature check.
+    /// - Still staging or checking: the pipeline carries on into the area it has, and moves
+    ///   the copy (by the rule above) when the verdict is in, before `ready` or `warning`.
+    ///
+    /// Changes run one at a time, in order; `install()` and `cancel()` wait for the one in
+    /// flight, and `cancel()` stops a copy between files and deletes both areas. Ignored
+    /// once installing has begun or the session has ended.
+    public func changeDestination(_ url: URL) async {
+        guard !state.isFinal, !moving, installTask == nil, url.standardizedFileURL != destination.standardizedFileURL
+        else { return }
+        let started = clock.now
+        destination = url
+        let previous = switchTask
+        let task = Task {
+            await previous?.value
+            await self.applyDestination()
+        }
+        switchTask = task
+        await task.value
+        lastDestinationChange = clock.now - started
+    }
+
+    private func applyDestination() async {
+        guard !stopFlag.isSet, !state.isFinal, !moving else { return }
+        if settled {
+            guard await settleDestination() else { return }
+        } else {
+            guard let bundleName = summary?.bundleName ?? early?.app.name else { return }
+            let target = destination
+            let update = await Self.readInstalledCopy(in: target, bundleName: bundleName, verdict: verdict)
+            // A later change reads again, and a pipeline that settled meanwhile read this
+            // destination itself, against the verdict.
+            guard target == destination, !settled, !state.isFinal else { return }
+            installedCopy = .some(update)
+            summary?.update = update
+            early?.summary.update = update
+        }
+        // Publish the current state again, with the installed copy at the new destination.
+        state = state
+    }
+
+    /// Moves the staged copy to the destination's volume if it isn't there, then reads the
+    /// installed copy against the verdict. Loops while the destination changes under it.
+    /// False when the move failed (the session is then `failed`) or the session stopped.
+    private func settleDestination() async -> Bool {
+        while true {
+            let target = destination
+            if let staged, !onSameVolume(staged.area.url, target) {
+                guard await relocate(staged, to: target) else { return false }
+            }
+            guard let bundleName = summary?.bundleName else { return true }
+            let update = await Self.readInstalledCopy(
+                in: target, bundleName: bundleName, verdict: verdict)
+            guard !stopFlag.isSet else { return false }
+            guard target == destination else { continue }
+            installedCopy = .some(update)
+            summary?.update = update
+            return true
+        }
+    }
+
+    private func onSameVolume(_ a: URL, _ b: URL) -> Bool {
+        guard let first = options.volumeIdentity(a), let second = options.volumeIdentity(b) else { return false }
+        return first == second
+    }
+
+    /// Copies the staged app to `target`'s volume, checks the copy is the code the verdict
+    /// covers, and swaps it in for the old area, which is deleted.
+    private func relocate(_ old: StagedApp, to target: URL) async -> Bool {
+        let stop = stopFlag
+        let expected = verdict?.signing?.cdhashes ?? []
+        let qos: QualityOfService = isFast ? .userInitiated : .utility
+        let moved: StagedApp
+        do {
+            moved = try await Self.onThread(qos: qos) {
+                try Extractor.copy(old, toVolumeOf: target, isCancelled: { stop.isSet })
+            }
+        } catch {
+            if stop.isSet { return false }
+            await fail(InstallFailure(error))
+            return false
+        }
+        let url = moved.url
+        let copied = (try? await Self.onThread(qos: qos) { try Verifier.signingInfo(app: url) })?.cdhashes ?? []
+        guard copied == expected else {
+            await Self.discard(moved.area)
+            await fail(.other("The copy on the new volume doesn't match the checked app."))
+            return false
+        }
+        guard !stop.isSet else {
+            await Self.discard(moved.area)
+            return false
+        }
+        staged = moved
+        stagingArea = moved.area
+        relocations += 1
+        await Self.discard(old.area)
+        return true
+    }
+
+    /// Ends the session `failed`, deleting the staged copy first.
+    private func fail(_ failure: InstallFailure) async {
+        if let staged {
+            self.staged = nil
+            await Self.discard(staged.area)
+        }
+        if !state.isFinal { state = .failed(failure) }
+    }
+
+    /// The installed copy named `bundleName` in `destination`: nil when there is none,
+    /// else its version and, once there is a `verdict`, whether the same developer signed it.
+    static func readInstalledCopy(in destination: URL, bundleName: String, verdict: Verdict?) async
+        -> AppSummary.Update?
+    {
+        let installed = destination.appending(path: bundleName, directoryHint: .isDirectory)
+        return try? await onThread(qos: .userInitiated) { () -> AppSummary.Update? in
+            var status = stat()
+            guard lstat(installed.path, &status) == 0, status.st_mode & S_IFMT == S_IFDIR else { return nil }
+            var update = AppSummary.Update(
+                installedVersion: BundleInfo.read(installedApp: installed)?.shortVersion, developer: nil)
+            if let verdict {
+                if let new = verdict.signing, let signing = try? Verifier.signingInfo(app: installed) {
+                    update.developer = Verifier.sameDeveloper(new: new, installed: signing)
+                } else {
+                    // The installed copy's signature couldn't be read: nothing to compare against.
+                    update.developer = .installedUnsigned
+                }
+            }
+            return update
+        } ?? nil
+    }
+
     /// The image device's decode policy right now; nil for raw images or before staging.
     var decodePolicy: DecodePolicy? { device?.decodePolicy }
 
@@ -244,7 +425,7 @@ public actor InstallSession {
             timings.opened = elapsed()
             if let licence = opened.image.licence {
                 let fileSystem = opened.fileSystem
-                let destination = options.destination
+                let destination = self.destination
                 let read = try? await Self.onThread(qos: .userInitiated) {
                     Self.identifySingleApp(in: fileSystem, destination: destination)
                 }
@@ -353,8 +534,8 @@ public actor InstallSession {
     /// holds it. The first read is small and runs at user-initiated priority on the device's
     /// current policy; the size walk and everything after run at the background policy.
     private func identifyAndStage(_ app: Entry, from fileSystem: any FileSystem, udif: UDIFDevice?) async {
-        let destination = options.destination
-        let summary: AppSummary
+        let destination = self.destination
+        var summary: AppSummary
         if let early, early.app.name == app.name, mount == nil {
             summary = early.summary
         } else {
@@ -368,6 +549,12 @@ public actor InstallSession {
                     size: nil)
         }
         early = nil
+        if destination != self.destination {
+            // Changed while naming the app: look at the installed copy where it now goes.
+            let update = await Self.readInstalledCopy(in: self.destination, bundleName: app.name, verdict: nil)
+            installedCopy = .some(update)
+            summary.update = update
+        }
         self.summary = summary
         timings.identified = elapsed()
         state =
@@ -383,7 +570,7 @@ public actor InstallSession {
     private func prepareAndStage(
         _ app: Entry, summary identified: AppSummary, from fileSystem: any FileSystem, udif: UDIFDevice?
     ) async {
-        let destination = options.destination
+        let destination = self.destination
         let dmgURL = dmg
         let prepared: Prepared
         do {
@@ -441,15 +628,10 @@ public actor InstallSession {
         timings.verified = elapsed()
         guard !stopFlag.isSet, !Task.isCancelled else { return finishCancelled() }
 
+        self.verdict = verdict
         summary.signer = verdict.signing?.organisation ?? verdict.signing?.signer
         summary.teamID = verdict.signing?.teamID
         summary.isNotarized = verdict.assessment?.assessment?.isCheckedByApple == true
-        if let installed = prepared.installedSigning, let signing = verdict.signing {
-            summary.update?.developer = Verifier.sameDeveloper(new: signing, installed: installed)
-        } else if summary.update != nil {
-            // The installed copy's signature couldn't be read: nothing to compare against.
-            summary.update?.developer = .installedUnsigned
-        }
         self.summary = summary
 
         if options.skipFirstLaunchPrompt, verdict.allowsPreApproval {
@@ -457,16 +639,29 @@ public actor InstallSession {
             _ = try? await Self.onThread(qos: isFast ? .userInitiated : .utility) { try Extractor.markApproved(staged) }
         }
 
+        if case .refuse = verdict.decision {
+            self.staged = nil
+            Extractor.discard(staged)
+        }
+        // Reads the installed copy's developer against the verdict. The destination may also
+        // have changed while staging and checking: then the staged copy goes to its volume
+        // and the installed copy is read there (`changeDestination`).
+        guard await settleDestination(), let latest = self.summary else { return }
+        summary = latest
         switch verdict.decision {
         case .install:
             // Install already clicked: stay in `installing` rather than flash `ready`.
-            if installRequested { await moveIntoPlace() } else { state = .ready(summary) }
+            if installRequested {
+                await moveIntoPlace()
+            } else {
+                state = .ready(summary)
+                settled = true
+            }
         case .warn(let warning):
             installRequested = false
             state = .warning(summary, warning)
+            settled = true
         case .refuse(let refusal):
-            self.staged = nil
-            Extractor.discard(staged)
             state = .refused(summary, refusal)
         }
     }
@@ -626,8 +821,9 @@ public actor InstallSession {
     /// handed to `options.trash`.
     private func moveIntoPlace() async {
         guard let staged, let summary, !stopFlag.isSet else { return }
+        moving = true
         state = .installing(summary, InstallProgress(bytesDone: summary.size ?? 0, bytesTotal: summary.size ?? 0))
-        let destination = options.destination
+        let destination = self.destination
         let trash = options.trash
         do {
             let url = try await Self.onThread(qos: .userInitiated) {
@@ -735,11 +931,10 @@ struct EarlyRead: Sendable {
 }
 
 /// Everything read after `identified` and before staging starts, in one blocking pass off
-/// the actor at the background policy: the size walk, the installed copy's signature, the
-/// ticket, the quarantine and the staging area.
+/// the actor at the background policy: the size walk, the ticket, the quarantine and the
+/// staging area. The installed copy's signature is read once the verdict is in.
 private struct Prepared: Sendable {
     var summary: AppSummary
-    var installedSigning: SigningInfo?
     var ticket: NotarizationTicket?
     var quarantine: String?
     var area: StagingArea
@@ -750,18 +945,12 @@ private struct Prepared: Sendable {
         var summary = identified
         summary.size = try summary.size ?? InstallSession.size(of: app, in: fileSystem)
 
-        var installedSigning: SigningInfo?
-        if summary.update != nil {
-            let installed = destination.appending(path: app.name, directoryHint: .isDirectory)
-            installedSigning = try? Verifier.signingInfo(app: installed)
-        }
-
         // A DMG without a ticket, or one this code can't parse, just means nothing to staple.
         let ticket = try? Verifier.ticket(fromDMG: dmg.path)
         let quarantine = try Quarantine.read(at: dmg)
         let area = try Extractor.makeStagingArea(for: destination)
         return Prepared(
-            summary: summary, installedSigning: installedSigning, ticket: ticket,
+            summary: summary, ticket: ticket,
             quarantine: quarantine, area: area)
     }
 }

@@ -10,7 +10,10 @@ enum Log {
 /// them changes saved settings.
 ///
 /// - `--watch <folder>`: watch this folder instead of the one in Settings.
-/// - `--destination <folder>`: install here instead of Applications.
+/// - `--destination <folder>`: install here instead of Applications (either choice).
+/// - `--home-destination <folder>`: with "Applications in your home folder" chosen in the
+///   panel, install here instead (else `--destination`, else `~/Applications`), so a test
+///   can switch between two scratch folders.
 /// - `--trash <folder>`: move trashed disk images and replaced apps here instead of the
 ///   Trash, so a test never touches the real one.
 /// - `--no-login-item`: leave the login item alone (implied by any of the above).
@@ -27,6 +30,7 @@ enum Log {
 struct LaunchOptions {
     var watchFolder: URL?
     var destination: URL?
+    var homeDestination: URL?
     var trashFolder: URL?
     var manageLoginItem = true
     var demo: String?
@@ -44,6 +48,7 @@ struct LaunchOptions {
             switch argument {
             case "--watch": watchFolder = iterator.next().map(Self.folder)
             case "--destination": destination = iterator.next().map(Self.folder)
+            case "--home-destination": homeDestination = iterator.next().map(Self.folder)
             case "--trash": trashFolder = iterator.next().map(Self.folder)
             case "--no-login-item": manageLoginItem = false
             case "--background-test": backgroundTest = true
@@ -56,9 +61,7 @@ struct LaunchOptions {
             default: break
             }
         }
-        if watchFolder != nil || destination != nil || trashFolder != nil || demo != nil || probeHandler
-            || resetOnboarding || backgroundTest
-        {
+        if usesTestFolders || demo != nil || probeHandler || resetOnboarding || backgroundTest {
             manageLoginItem = false
         }
     }
@@ -68,8 +71,10 @@ struct LaunchOptions {
     /// Never take focus or change the activation policy (`--background-test`, any demo).
     var isBackgroundTest: Bool { backgroundTest || demo != nil }
 
-    /// A panel test launch: any of `--watch`, `--destination` or `--trash`.
-    var usesTestFolders: Bool { watchFolder != nil || destination != nil || trashFolder != nil }
+    /// A panel test launch: any of `--watch`, `--destination`, `--home-destination` or `--trash`.
+    var usesTestFolders: Bool {
+        watchFolder != nil || destination != nil || homeDestination != nil || trashFolder != nil
+    }
 
     /// Panel test launches go straight to the panel (see the type's notes).
     var skipsOnboarding: Bool { usesTestFolders && !resetOnboarding }
