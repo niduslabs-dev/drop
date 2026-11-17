@@ -94,7 +94,11 @@ jobs:
         run: |
           VERSION=$VERSION BUILD=$VERSION SIGN_IDENTITY="$IDENTITY" scripts/build-app.sh
           codesign --verify --deep --strict --verbose=2 .build/Drop.app
-          codesign -dv .build/Drop.app 2>&1 | grep -E 'Authority=Developer ID Application|flags=.*runtime'
+          # Developer ID and the hardened runtime, each checked on its own (-dvv: -dv prints no
+          # Authority lines, so one grep for either would pass on the runtime flag alone).
+          APP_SIGN=$(codesign -dvv .build/Drop.app 2>&1)
+          grep -q 'Authority=Developer ID Application' <<< "$APP_SIGN"
+          grep -q 'flags=.*runtime' <<< "$APP_SIGN"
 
       - name: Build the DMG
         run: |
