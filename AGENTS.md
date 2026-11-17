@@ -4,7 +4,7 @@ A Mac app that installs an app straight out of a `.dmg` without mounting it, and
 
 ## Layout
 
-A Swift package (`Package.swift`), no Xcode project yet:
+A Swift package (`Package.swift`), no Xcode project (settled 2026-11-18: it stays a plain package):
 
 - `ReaderCore`: shared types (`BlockDevice`, `FileSystem`, `Entry`, `Extent`, `ByteReader`, `ReaderError`).
 - `DiskImage`: UDIF container, decoders, partition maps.
