@@ -582,8 +582,33 @@ enum Theme {
         /// easing in and fading. Reduce Motion: the fade alone.
         static let popupExitDuration: Double = 0.22
 
-        /// Numbers that change roll: progress, sizes.
+        /// Numbers that change roll: progress, sizes. Also how a rolling number's width
+        /// and its unchanged characters follow the change.
         static var numbers: Animation { .easeInOut(duration: 0.45) }
+        /// Each changed character of a rolling number, after `.numericText()`: it arrives
+        /// from `rollRise` points below (above, when the value falls) at `rollScale` and
+        /// settles on `rollSpring`, overshooting a little. It fades in evenly over
+        /// `rollFadeDuration`, and its `rollBlur` clears sooner, over `rollBlurDuration`.
+        /// The character it replaces leaves the same way, in reverse.
+        static let rollRise: CGFloat = 6
+        static let rollScale: CGFloat = 0.8
+        static let rollBlur: CGFloat = 1.5
+        static let rollBlurDuration: Double = 0.15
+        static let rollFadeDuration: Double = 0.22
+        static let rollSpring = Spring(duration: 0.35, bounce: 0.4)
+        /// Changed characters start left to right `rollStaggerMax` apart, closer when there
+        /// are many, so the last one starts within `rollStaggerSpan`.
+        static let rollStaggerMax: Double = 0.07
+        static let rollStaggerSpan: Double = 0.15
+        static func rollStagger(slots: Int) -> Double {
+            guard slots > 1 else { return 0 }
+            return min(rollStaggerMax, rollStaggerSpan / Double(slots - 1))
+        }
+        /// From a character's start until both its move and its fade are done.
+        static var rollSettle: Double { max(rollSpring.settlingDuration, rollFadeDuration) }
+        /// A change whose layout hasn't been measured by then (nothing drew it) shows at
+        /// once, unrolled.
+        static let rollMeasureLimit: Duration = .milliseconds(250)
 
         /// Onboarding: the old page blurs out, the new page's elements blur in in turn.
         static let pageBlur: CGFloat = 8

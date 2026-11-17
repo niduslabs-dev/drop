@@ -508,11 +508,8 @@ struct StepCapsule: View {
     private func trackLabel(colour: Color) -> some View {
         let percent = PanelButtons.Primary.percent(step.fill)
         return StatusSwap(key: step.isSolid ? "" : step.phrase) {
-            Text(step.isSolid ? "" : step.label)
+            RollingNumber(step.isSolid ? "" : step.label, value: Double(percent))
                 .font(font)
-                .monospacedDigit()
-                .contentTransition(reduceMotion ? .identity : .numericText(value: Double(percent)))
-                .animation(reduceMotion ? nil : Theme.Motion.numbers, value: percent)
                 .foregroundStyle(colour)
                 .singleLineLabel()
                 .frame(maxWidth: .infinity)

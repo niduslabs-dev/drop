@@ -100,13 +100,9 @@ struct FlowButtonRow: View {
 /// The version and size line, with the numbers rolling as they change.
 struct VersionLine: View {
     let summary: AppSummary?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Text(text)
-            .monospacedDigit()
-            .contentTransition(reduceMotion ? .identity : .numericText())
-            .animation(reduceMotion ? nil : Theme.Motion.numbers, value: text)
+        RollingNumber(text)
     }
 
     private var text: String {
@@ -122,7 +118,6 @@ struct VersionLine: View {
 /// Install capsule widens smoothly to fit its label.
 struct MainBoard: View {
     @Bindable var model: PanelModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var working: Bool { model.board == .installing }
     private var done: Bool { model.board == .done }
@@ -132,9 +127,7 @@ struct MainBoard: View {
             ImageHeader(model: model)
             TitleRow(icon: model.icon, title: model.appName) {
                 StatusSwap(key: statusPhase) {
-                    Text(status).monospacedDigit()
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : Theme.Motion.numbers, value: status)
+                    RollingNumber(status)
                 }
             } badge: {
                 if done {

@@ -31,6 +31,8 @@
     /// moment (`-timeout`: never, with a short timeout) and a stand-in install. `self-newer`,
     /// `self-same` and their `window-` forms show Drop's own disk image (1.0.1 and 1.0.0
     /// against a running 1.0.0); `done-update` is the Update board at done, after a quit.
+    /// `size-lands` and `window-size-lands` show the version line gaining the size.
+    /// `roll-soak` plays the popup's number rolls over and over for a memory soak.
     @MainActor
     enum Demo {
         static let states = [
@@ -49,7 +51,7 @@
             "settings-update-bottom", "settings-update-idle-bottom", "open-after", "open-after-fail",
             "window-open-after", "window-open-after-fail", "update-flow", "update-flow-timeout",
             "window-update-flow", "window-update-flow-timeout", "self-newer", "self-same", "window-self-newer",
-            "window-self-same", "done-update",
+            "window-self-same", "done-update", "size-lands", "window-size-lands", "roll-soak",
         ]
 
         private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
@@ -82,6 +84,14 @@
             }
             if state.contains("open-after") {
                 runOpenAfter(state, app: app)
+                return
+            }
+            if state.hasSuffix("size-lands") {
+                runSizeLands(state, app: app)
+                return
+            }
+            if state == "roll-soak" {
+                runRollSoak(app: app)
                 return
             }
             if state.hasPrefix("settings") {
@@ -284,6 +294,54 @@
             }
         }
 
+        /// The size walk landing: the version line shows the version alone, then gains the
+        /// size, so the roll can be captured in motion. Quits when it's over.
+        private static func runSizeLands(_ state: String, app: AppDelegate) {
+            let model = makeModel(state.hasPrefix("window") ? "window-identified" : "identified")
+            Task {
+                app.panel.show(model)
+                try? await Task.sleep(for: settle)
+                report(app.panel.windowNumber)
+                try? await Task.sleep(for: openAfterLead)
+                model.state = .ready(linea)
+                print("DEMO_STEP size")
+                fflush(stdout)
+                try? await Task.sleep(for: openAfterLead)
+                NSApp.terminate(nil)
+            }
+        }
+
+        /// Every number roll the popup has, `rollSoakCycles` times, for `mem-soak.sh`'s roll
+        /// soak: each cycle shows a fresh popup, lands the size, counts "Copying files · N of
+        /// 84 MB" and "Installing… N%" up to the progress ceiling, shows Installed and closes.
+        /// Prints `DEMO_STEP soak-<n>` after each cycle and `DEMO_STEP soaked` at the end,
+        /// then stays open for the measurement.
+        private static func runRollSoak(app: AppDelegate) {
+            let total = 84 * megabyte
+            let ceiling = UInt64(Theme.Motion.progressCeiling * 100)
+            Task {
+                for cycle in 1...rollSoakCycles {
+                    let model = makeModel("identified")
+                    app.panel.show(model)
+                    try? await Task.sleep(for: rollSoakBeat)
+                    model.state = .ready(linea)
+                    try? await Task.sleep(for: rollSoakBeat)
+                    for percent in stride(from: rollSoakStep, through: ceiling, by: Int(rollSoakStep)) {
+                        model.state = .installing(
+                            linea, InstallProgress(bytesDone: total * percent / 100, bytesTotal: total))
+                        try? await Task.sleep(for: rollSoakTick)
+                    }
+                    model.state = .installed(URL(filePath: "/Applications/Linea.app"))
+                    try? await Task.sleep(for: rollSoakBeat)
+                    app.panel.close()
+                    print("DEMO_STEP soak-\(cycle)")
+                    fflush(stdout)
+                }
+                print("DEMO_STEP soaked")
+                fflush(stdout)
+            }
+        }
+
         /// Quit and Update from one press: the prompt, "Quitting …" while a stand-in app
         /// takes a moment to go, "Updating … N%", then Installed. Quits when it's over.
         private static func runUpdateFlow(_ state: String, app: AppDelegate) {
@@ -360,6 +418,14 @@
         private static let openAfterLead: Duration = .milliseconds(1500)
         /// How long each working step of the open-after sequence stays up.
         private static let openAfterBeat: Duration = .milliseconds(700)
+
+        /// The roll soak: cycles (one per DMG of the main soak), the percent step between
+        /// progress ticks, the time each tick stays up (one roll, finished), and the pause
+        /// around the size landing and Installed.
+        private static let rollSoakCycles = 12
+        private static let rollSoakStep: UInt64 = 3
+        private static let rollSoakTick: Duration = .milliseconds(500)
+        private static let rollSoakBeat: Duration = .milliseconds(1200)
 
         /// Long enough for the popup's spring and the staged reveals to finish.
         private static let settle: Duration = .milliseconds(2600)
