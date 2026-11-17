@@ -23,7 +23,7 @@ struct SelfImageTests {
         #expect(offer.title == "Drop 1.0.1")
         #expect(offer.subtitle == "You have 1.0.0")
         #expect(offer.message == "Drop updates itself. Check for Updates installs this version and restarts Drop.")
-        #expect(offer.primary == .init(title: "Check for Updates", action: .checkForUpdates))
+        #expect(offer.primary == .init(title: "Check for updates", action: .checkForUpdates))
         #expect(offer.secondary == .init(title: "Not now", action: .notNow))
     }
 

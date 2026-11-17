@@ -96,7 +96,7 @@ struct SettingsView: View {
                     // The caption reads the clock when the page draws; Settings is redrawn on
                     // every open and on each update event, which is often enough for "today".
                     SettingsRow(version.isEmpty ? "Drop" : "Version \(version)", caption: updates.versionCaption()) {
-                        Button("Check for Updates") { updates.perform(.check) }.buttonStyle(.nidusSmall)
+                        Button("Check for updates") { updates.perform(.check) }.buttonStyle(.nidusSmall)
                             .disabled(!updates.isEnabled || updates.phase == .checking)
                     }
                     SwitchRow(

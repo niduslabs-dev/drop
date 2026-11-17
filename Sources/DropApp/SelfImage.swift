@@ -104,7 +104,7 @@ struct SelfImage: Equatable {
 
     var primary: Button {
         switch kind {
-        case .newer: Button(title: "Check for Updates", action: .checkForUpdates)
+        case .newer: Button(title: "Check for updates", action: .checkForUpdates)
         case .notNewer: Button(title: "Done", action: .close)
         }
     }
