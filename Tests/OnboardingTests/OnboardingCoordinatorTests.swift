@@ -44,9 +44,15 @@ private final class FakeLoginItem: LoginItemRegistering {
 }
 
 /// One coordinator over a private defaults domain, with its fakes and what its callbacks saw.
+///
+/// The domain is a plist in a throwaway temporary folder, named by absolute path, rather than
+/// a named suite: cfprefsd writes a named suite's plist into `~/Library/Preferences` after the
+/// test process has removed it, so named suites leak one file per test.
 @MainActor
 private final class Harness {
-    let suite = "dev.niduslabs.drop.onboarding-tests.\(UUID().uuidString)"
+    let folderForDefaults = FileManager.default.temporaryDirectory.appending(
+        path: "dev.niduslabs.drop.onboarding-tests.\(UUID().uuidString)", directoryHint: .isDirectory)
+    let suite: String
     let defaults: UserDefaults
     let folder = FakeFolderAccess(.granted)
     let handler = FakeDefaultHandler(becomesDefault: true)
@@ -59,6 +65,8 @@ private final class Harness {
     var ended = 0
 
     init() {
+        try! FileManager.default.createDirectory(at: folderForDefaults, withIntermediateDirectories: true)
+        suite = folderForDefaults.appending(path: "defaults").path
         defaults = UserDefaults(suiteName: suite)!
     }
 
@@ -74,7 +82,10 @@ private final class Harness {
         return coordinator
     }
 
-    deinit { UserDefaults().removePersistentDomain(forName: suite) }
+    deinit {
+        UserDefaults().removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: folderForDefaults)
+    }
 }
 
 @MainActor
