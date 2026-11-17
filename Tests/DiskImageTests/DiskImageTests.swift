@@ -241,17 +241,17 @@ final class DiskBuffer: @unchecked Sendable {
         }
     }
 
-    @Test func cacheEvictsByBytes() {
+    @Test func cacheEvictsByBytes() throws {
         var cache = ChunkCache(limit: 10)
-        cache.put(1, [UInt8](repeating: 1, count: 4))
-        cache.put(2, [UInt8](repeating: 2, count: 4))
+        cache.put(1, try MappedBytes(count: 4) { _ in })
+        cache.put(2, try MappedBytes(count: 4) { _ in })
         _ = cache.get(1)
-        cache.put(3, [UInt8](repeating: 3, count: 4))
+        cache.put(3, try MappedBytes(count: 4) { _ in })
         #expect(cache.get(2) == nil)
         #expect(cache.get(1) != nil)
         #expect(cache.get(3) != nil)
         #expect(cache.total == 8)
-        cache.put(4, [UInt8](repeating: 4, count: 11))
+        cache.put(4, try MappedBytes(count: 11) { _ in })
         #expect(cache.get(4) == nil)
     }
 

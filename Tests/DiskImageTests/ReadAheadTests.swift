@@ -119,13 +119,15 @@ import Testing
 
         init(delay: Duration) { self.delay = delay }
 
-        func decode(_ chunk: Chunk) -> [UInt8] {
+        func decode(_ chunk: Chunk) throws -> MappedBytes {
             let now = running.wrappingAdd(1, ordering: .relaxed).newValue
             peak.max(now, ordering: .relaxed)
             calls.withLock { $0[chunk.index, default: 0] += 1 }
             Thread.sleep(forTimeInterval: Double(delay.components.attoseconds) / 1e18)
             running.wrappingSubtract(1, ordering: .relaxed)
-            return [UInt8](repeating: UInt8(truncatingIfNeeded: chunk.index), count: Int(chunk.length))
+            return try MappedBytes(count: Int(chunk.length)) {
+                $0.initializeMemory(as: UInt8.self, repeating: UInt8(truncatingIfNeeded: chunk.index))
+            }
         }
 
         func resetPeak() { peak.store(running.load(ordering: .relaxed), ordering: .relaxed) }
@@ -142,7 +144,7 @@ import Testing
     }
 
     static func scheduler(_ decoder: SlowDecoder, chunks: Int, policy: DecodePolicy) -> DecodeScheduler {
-        DecodeScheduler(chunks: fakeChunks(chunks), cacheLimit: 64 << 20, policy: policy) { decoder.decode($0) }
+        DecodeScheduler(chunks: fakeChunks(chunks), cacheLimit: 64 << 20, policy: policy) { try decoder.decode($0) }
     }
 
     /// Reads chunks `range` the way `UDIFDevice.read` does, `perRead` chunks per read,
@@ -154,7 +156,8 @@ import Testing
             scheduler.plan(first: first, last: last)
             for index in first...last {
                 guard let bytes = try? scheduler.bytes(of: index),
-                    bytes.count == Int(fakeChunkSize), bytes.allSatisfy({ $0 == UInt8(truncatingIfNeeded: index) })
+                    bytes.count == Int(fakeChunkSize),
+                    bytes.withUnsafeBytes({ $0.allSatisfy { $0 == UInt8(truncatingIfNeeded: index) } })
                 else { return false }
             }
             first = last + 1
@@ -226,7 +229,7 @@ import Testing
         let scheduler = DecodeScheduler(
             chunks: Self.fakeChunks(400), cacheLimit: 1 << 20,
             policy: DecodePolicy(maxDecoders: 4, qos: .utility, readAheadBytes: 1 << 20)
-        ) { decoder.decode($0) }
+        ) { try decoder.decode($0) }
         #expect(Self.stream(scheduler, 0..<10, perRead: 1))
         // The first stream stops at chunk 9 with read-ahead reserved past it.
         Thread.sleep(forTimeInterval: 0.05)

@@ -134,8 +134,10 @@ enum Decoders {
 
     // MARK: Compression framework
 
-    /// `compression_decode_buffer` returns the bytes written and can't report "more output
-    /// remained", so a full buffer is the success condition.
+    /// Streams the chunk through in one call with `FINALIZE` and requires the stream's end
+    /// marker. `compression_decode_buffer` can't be used: it returns the bytes written and stops
+    /// once `output` is full, so an LZVN block cut short still reported a full chunk (found by
+    /// `truncatedChunkThrows`).
     private static func compression(
         _ input: UnsafeRawBufferPointer, _ output: UnsafeMutableRawBufferPointer,
         algorithm: compression_algorithm, name: String
@@ -143,11 +145,21 @@ enum Decoders {
         guard let source = input.baseAddress, let destination = output.baseAddress else {
             throw ReaderError.corrupt("\(name) chunk is empty")
         }
-        let written = compression_decode_buffer(
-            destination.assumingMemoryBound(to: UInt8.self), output.count,
-            source.assumingMemoryBound(to: UInt8.self), input.count, nil, algorithm)
-        guard written == output.count else {
-            throw ReaderError.corrupt("\(name) chunk decoded to \(written) of \(output.count) bytes")
+        var stream = compression_stream(
+            dst_ptr: destination.assumingMemoryBound(to: UInt8.self), dst_size: output.count,
+            src_ptr: source.assumingMemoryBound(to: UInt8.self), src_size: input.count, state: nil)
+        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, algorithm) == COMPRESSION_STATUS_OK else {
+            throw ReaderError.corrupt("\(name) init failed")
+        }
+        defer { compression_stream_destroy(&stream) }
+        stream.dst_ptr = destination.assumingMemoryBound(to: UInt8.self)
+        stream.dst_size = output.count
+        stream.src_ptr = source.assumingMemoryBound(to: UInt8.self)
+        stream.src_size = input.count
+        let status = compression_stream_process(&stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+        let written = output.count - stream.dst_size
+        guard status == COMPRESSION_STATUS_END, written == output.count else {
+            throw ReaderError.corrupt("\(name) chunk decoded to \(written) of \(output.count) bytes (status \(status))")
         }
     }
 }

@@ -37,6 +37,8 @@ public final class UDIFDevice: BlockDevice {
 
     private let file: any BlockDevice
     private let scheduler: DecodeScheduler
+    /// The decoded and compressed chunk buffers mapped right now, for tests.
+    let mappedRegions = MappedRegions()
 
     /// `file` is the `.dmg` itself. `chunks` need not be sorted; overlapping chunks or chunks
     /// past `size` throw `corrupt`.
@@ -69,8 +71,9 @@ public final class UDIFDevice: BlockDevice {
         self.tables = tables
         self.chunks = chunks
         self.cacheLimit = cacheLimit
+        let regions = mappedRegions
         self.scheduler = DecodeScheduler(chunks: chunks, cacheLimit: cacheLimit, policy: decodePolicy) {
-            [file] chunk in try Self.decode(chunk, from: file)
+            [file] chunk in try Self.decode(chunk, from: file, regions: regions)
         }
     }
 
@@ -138,19 +141,24 @@ public final class UDIFDevice: BlockDevice {
 
     /// Decodes one chunk into a new array of `chunk.length` bytes, without the cache.
     /// Zero-fill chunks return zeros; prefer skipping them.
-    public func decodeChunk(_ chunk: Chunk) throws -> [UInt8] { try Self.decode(chunk, from: file) }
+    public func decodeChunk(_ chunk: Chunk) throws -> [UInt8] {
+        try Self.decode(chunk, from: file, regions: mappedRegions).withUnsafeBytes { Array($0) }
+    }
 
-    private static func decode(_ chunk: Chunk, from file: any BlockDevice) throws -> [UInt8] {
+    /// Decodes one chunk into its own mapping of exactly `chunk.length` bytes. The compressed
+    /// input gets one too and is unmapped as soon as the decoder returns (`MappedBytes`).
+    static func decode(_ chunk: Chunk, from file: any BlockDevice, regions: MappedRegions?) throws -> MappedBytes {
         guard chunk.length <= Self.maxDecodedChunkSize else {
             throw ReaderError.corrupt("chunk at \(chunk.deviceOffset) too large to decode whole")
         }
-        var output = [UInt8](repeating: 0, count: Int(chunk.length))
-        if chunk.type.isZeroFill { return output }
-        let input = try storedBytes(of: chunk, in: file)
-        try input.withUnsafeBytes { source in
-            try output.withUnsafeMutableBytes { try Decoders.decode(chunk.type, input: source, output: $0) }
+        // A fresh mapping is already zeros.
+        if chunk.type.isZeroFill { return try MappedBytes(count: Int(chunk.length), regions: regions) { _ in } }
+        let input = try storedBytes(of: chunk, in: file, regions: regions)
+        return try input.withUnsafeBytes { source in
+            try MappedBytes(count: Int(chunk.length), regions: regions) {
+                try Decoders.decode(chunk.type, input: source, output: $0)
+            }
         }
-        return output
     }
 
     /// Decodes every chunk with at most `maxConcurrency` workers and hands each decoded run
@@ -187,7 +195,7 @@ public final class UDIFDevice: BlockDevice {
         _ chunk: Chunk, _ body: (_ deviceOffset: UInt64, _ bytes: UnsafeRawBufferPointer) throws -> Void
     ) throws {
         guard chunk.type == .raw else {
-            let bytes = try decodeChunk(chunk)
+            let bytes = try Self.decode(chunk, from: file, regions: mappedRegions)
             try bytes.withUnsafeBytes { try body(chunk.deviceOffset, $0) }
             return
         }
@@ -204,12 +212,16 @@ public final class UDIFDevice: BlockDevice {
         }
     }
 
-    private static func storedBytes(of chunk: Chunk, in file: any BlockDevice) throws -> [UInt8] {
+    private static func storedBytes(
+        of chunk: Chunk, in file: any BlockDevice, regions: MappedRegions?
+    ) throws -> MappedBytes {
         guard chunk.fileLength <= Self.maxDecodedChunkSize * 2 else {
             throw ReaderError.corrupt("chunk at \(chunk.deviceOffset) stores \(chunk.fileLength) bytes")
         }
         do {
-            return try file.read(at: chunk.fileOffset, count: Int(chunk.fileLength))
+            return try MappedBytes(count: Int(chunk.fileLength), regions: regions) {
+                try file.read(at: chunk.fileOffset, into: $0)
+            }
         } catch ReaderError.outOfBounds {
             throw ReaderError.corrupt("chunk at \(chunk.deviceOffset) points past the file")
         }
@@ -232,11 +244,12 @@ public final class UDIFDevice: BlockDevice {
 }
 
 /// A least-recently-used map from chunk index to decoded bytes, bounded by total bytes.
+/// Evicting an entry drops its reference, so its mapping goes as soon as no reader holds it.
 /// A doubly linked list over a dictionary keeps every operation O(1), which matters for
 /// images with thousands of tiny chunks.
 struct ChunkCache: ~Copyable {
     private struct Node {
-        var bytes: [UInt8]
+        var bytes: MappedBytes
         var previous: Int?
         var next: Int?
     }
@@ -251,7 +264,7 @@ struct ChunkCache: ~Copyable {
 
     var count: Int { nodes.count }
 
-    mutating func get(_ key: Int) -> [UInt8]? {
+    mutating func get(_ key: Int) -> MappedBytes? {
         guard let node = nodes[key] else { return nil }
         unlink(key)
         pushNewest(key, node.bytes)
@@ -260,7 +273,7 @@ struct ChunkCache: ~Copyable {
 
     func contains(_ key: Int) -> Bool { nodes[key] != nil }
 
-    mutating func put(_ key: Int, _ bytes: [UInt8]) {
+    mutating func put(_ key: Int, _ bytes: MappedBytes) {
         guard bytes.count <= limit else { return }
         if nodes[key] != nil { unlink(key) }
         pushNewest(key, bytes)
@@ -272,7 +285,7 @@ struct ChunkCache: ~Copyable {
         while total > bytes, let victim = oldest { unlink(victim) }
     }
 
-    private mutating func pushNewest(_ key: Int, _ bytes: [UInt8]) {
+    private mutating func pushNewest(_ key: Int, _ bytes: MappedBytes) {
         nodes[key] = Node(bytes: bytes, previous: nil, next: newest)
         if let newest { nodes[newest]?.previous = key }
         newest = key

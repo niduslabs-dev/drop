@@ -116,7 +116,7 @@ final class DecodeScheduler: @unchecked Sendable {
     private enum Slot {
         case queued
         case decoding
-        case ready([UInt8])
+        case ready(MappedBytes)
     }
 
     private struct Reservation {
@@ -133,7 +133,7 @@ final class DecodeScheduler: @unchecked Sendable {
 
     let chunks: [Chunk]
     let cacheLimit: Int
-    private let decode: @Sendable (Chunk) throws -> [UInt8]
+    private let decode: @Sendable (Chunk) throws -> MappedBytes
     private let condition = NSCondition()
 
     // Everything below is guarded by `condition`.
@@ -152,7 +152,7 @@ final class DecodeScheduler: @unchecked Sendable {
 
     init(
         chunks: [Chunk], cacheLimit: Int, policy: DecodePolicy,
-        decode: @escaping @Sendable (Chunk) throws -> [UInt8]
+        decode: @escaping @Sendable (Chunk) throws -> MappedBytes
     ) {
         self.chunks = chunks
         self.cacheLimit = cacheLimit
@@ -216,8 +216,9 @@ final class DecodeScheduler: @unchecked Sendable {
     }
 
     /// The decoded bytes of compressed chunk `index`, decoding it on this thread or
-    /// waiting for a worker as needed.
-    func bytes(of index: Int) throws -> [UInt8] {
+    /// waiting for a worker as needed. The caller's reference keeps them mapped while it
+    /// copies out, even if the cache evicts the chunk meanwhile.
+    func bytes(of index: Int) throws -> MappedBytes {
         condition.lock()
         defer { condition.unlock() }
         while true {
@@ -384,7 +385,7 @@ final class DecodeScheduler: @unchecked Sendable {
     }
 
     /// Decodes `index` on the calling thread, which holds the lock on entry and exit.
-    private func decodeHere(_ index: Int) throws -> [UInt8] {
+    private func decodeHere(_ index: Int) throws -> MappedBytes {
         started(index)
         demandDecoding.insert(index)
         condition.unlock()
