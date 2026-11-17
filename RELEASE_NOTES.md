@@ -4,6 +4,10 @@ The release workflow takes the section for the version it builds: its "- " lines
 GitHub release and the update feed, and the first three show in Drop's update popup. Keep
 them short, one change per line.
 
+## 1.0.3
+
+- The rolling numbers keep their punctuation steady
+
 ## 1.0.2
 
 - Uses far less memory while a disk image is open
