@@ -64,9 +64,9 @@ enum Theme {
         /// Settings' window behind its groups.
         static let settingsTint = Color(nsColor: NSColor(hex: 0x18171D))
         static let settingsTintOpacity: Double = 0.88
-        /// Reduce Transparency: solid ink.
-        static let solidPanel = Color(nsColor: NSColor(hex: 0x232229))
-        static let solidWindow = Color(nsColor: NSColor(hex: 0x1C1B21))
+        /// Reduce Transparency: solid ink (`surfaceBaseSolid` dark), the popup and the windows
+        /// alike, as in Pane.
+        static let solid = Color(nsColor: NSColor(hex: 0x232229))
     }
 
     /// Where the popup sits: the Arrival board's top right, this far inside the visible
