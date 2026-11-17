@@ -1,11 +1,22 @@
 # Build, test, lint and assemble Drop.app (ad hoc signed) on every push to main and every
 # pull request. Needs no secrets, so pull requests from forks run it as they are.
+#
+# Two caches, saved by main runs only (pull requests restore them): SwiftPM's .build
+# (checkouts, artifacts, the debug and release builds of the dependencies) and the test
+# fixtures (.build/fixtures, made by the scripts/fixtures-*.sh, keyed on those scripts and on
+# the macOS and toolchain that made them). The release workflow restores main's copies
+# read-only, and skips its own tests when this workflow passed on the tagged code
+# (.github/scripts/ci-passed.sh).
 name: CI
 
 on:
   push:
     branches: [main]
+    # Docs-only pushes skip CI. Keep in step with IGNORED in .github/scripts/ci-passed.sh.
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,47 +28,79 @@ concurrency:
 jobs:
   build:
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The toolchain goes into the cache keys: a build from another Xcode or Swift is never
+      # restored. SwiftPM builds with one job per core by default; the count is logged.
       - name: Select Xcode 27
+        id: xcode
         run: |
-          XCODE=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          XCODE=$(printf '%s\n' /Applications/Xcode_27*.app | sort -V | tail -1)
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
           swift --version
+          echo "cores: $(sysctl -n hw.ncpu), workspace: $GITHUB_WORKSPACE"
+          XCODE_BUILD=$(xcodebuild -version | awk '/Build version/{print $3}')
+          SWIFT=$(swift --version 2>&1 | sed -n 's/.*swiftlang-\([^ ]*\).*/\1/p')
+          echo "toolchain=xcode$XCODE_BUILD-swift$SWIFT" >> "$GITHUB_OUTPUT"
+          echo "macos=$(sw_vers -productVersion)-$(sw_vers -buildVersion)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore the SwiftPM cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .build
-          key: spm-${{ runner.os }}-xcode27-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-xcode27-
+          path: |
+            .build
+            !.build/fixtures
+            !.build/Drop.app
+          key: spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.toolchain }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.toolchain }}-
+
+      # Exact key only: fixtures from other scripts would not match what the tests expect.
+      - name: Restore the fixtures
+        id: fixtures
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/fixtures
+          key: fixtures-${{ runner.arch }}-macos${{ steps.xcode.outputs.macos }}-${{ steps.xcode.outputs.toolchain }}-${{ hashFiles('scripts/fixtures-*.sh', 'scripts/lib/**') }}
 
       - name: Lint
-        run: swift format lint --strict --recursive Sources Tests Package.swift
+        run: .github/scripts/test.sh lint
 
       - name: Build
-        run: scripts/swift.sh build
+        run: .github/scripts/test.sh build
 
-      # The fixture images and apps the tests read (installer and mount need verifier's).
-      # Real-app fixtures come from DMGs kept out of git (.claude/samples), so CI skips the
-      # tests that need them; corpus and timing tests are opt-in and stay off.
       - name: Fixtures
-        run: |
-          scripts/fixtures-diskimage.sh
-          scripts/fixtures-hfsplus.sh
-          scripts/fixtures-apfs.sh
-          scripts/fixtures-verifier.sh
-          scripts/fixtures-installer.sh
-          scripts/fixtures-mount.sh
+        if: steps.fixtures.outputs.cache-hit != 'true'
+        run: .github/scripts/test.sh fixtures
 
       - name: Test
-        run: scripts/swift.sh test --skip "$(grep -v '^#' .github/ci-skip-tests.txt | paste -sd'|' -)"
+        run: .github/scripts/test.sh test
 
       - name: Assemble Drop.app
         run: |
           scripts/build-app.sh
           codesign --verify --deep --strict --verbose=2 .build/Drop.app
+
+      # After a passing run on main only, and only when the key is new (an exact hit is
+      # already stored). Pull requests never write a cache that main or a release could read.
+      - name: Save the SwiftPM cache
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build
+            !.build/fixtures
+            !.build/Drop.app
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Save the fixtures
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.fixtures.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/fixtures
+          key: ${{ steps.fixtures.outputs.cache-primary-key }}
