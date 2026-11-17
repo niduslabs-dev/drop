@@ -281,7 +281,8 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
                 .fixedSize()
                 .onGeometryChange(for: CGSize.self, of: { $0.size }) { [weak self] size in
                     self?.resizePopup(to: size)
-                })
+                }
+                .displayOptions())
         let hosting: FirstMouseHostingView<AnyView>
         if let popupHosting {
             hosting = popupHosting
@@ -371,7 +372,8 @@ final class PanelWindowController: NSObject, NSWindowDelegate {
                 .ignoresSafeArea()
                 .onGeometryChange(for: CGSize.self, of: { $0.size }) { [weak self] size in
                     self?.resizeWindow(to: size)
-                })
+                }
+                .displayOptions())
         let hosting: NSHostingView<AnyView>
         if let windowHosting {
             hosting = windowHosting

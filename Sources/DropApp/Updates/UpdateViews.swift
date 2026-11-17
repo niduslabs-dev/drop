@@ -105,7 +105,7 @@ struct UpdateBanner: View {
         .padding(.horizontal, Theme.Row.horizontalPadding)
         .padding(.vertical, Theme.Row.verticalPadding)
         .background(Theme.Colour.accent.opacity(Theme.Update.bannerFillOpacity), in: shape)
-        .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Radius.cardHairline) }
+        .overlay { Hairline(shape: shape) }
         .accessibilityElement(children: .contain)
     }
 }
@@ -170,7 +170,8 @@ final class UpdatePopupController {
             UpdatePopupView(model: model)
                 .environment(\.panelPresentation, .popup)
                 .fixedSize()
-                .onGeometryChange(for: CGSize.self, of: { $0.size }) { [weak self] size in self?.resize(to: size) })
+                .onGeometryChange(for: CGSize.self, of: { $0.size }) { [weak self] size in self?.resize(to: size) }
+                .displayOptions())
         if let hosting {
             hosting.rootView = root
         } else {

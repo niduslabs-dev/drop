@@ -370,7 +370,7 @@ private struct LicenceCard: View {
                 .frame(height: Theme.InstallWindow.licenceHeight)
                 .background(Theme.Colour.infoFill, in: shape)
                 .clipShape(shape)
-                .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Radius.cardHairline) }
+                .overlay { Hairline(shape: shape) }
                 .accessibilityLabel("Licence text")
             if let licence, licence.languages.count > 1 {
                 HStack {

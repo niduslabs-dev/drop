@@ -294,12 +294,17 @@ struct NidusSelect<Value: Hashable>: View {
             shape.fill(Theme.Colour.paper)
                 .overlay { shape.fill(Color.black.opacity(isHovered ? Theme.Button.hoverShade : 0)) }
         }
-        .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Button.hairline) }
+        .overlay { Hairline(shape: shape, width: Theme.Button.hairline) }
         .overlay {
-            shape.inset(by: -Theme.Select.openRing / 2)
-                .stroke(Theme.Colour.focusRing.opacity(openRingOpacity), lineWidth: Theme.Select.openRing)
-                .opacity(menu.isOpen ? 1 : 0)
-                .allowsHitTesting(false)
+            // Only in the tree while the menu is open, like `FocusRing`, so the select's
+            // accessibility frame stays the select's own.
+            if menu.isOpen {
+                shape.inset(by: -Theme.Select.openRing / 2)
+                    .stroke(Theme.Colour.focusRing.opacity(openRingOpacity), lineWidth: Theme.Select.openRing)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+            }
         }
         .background(AnchorView(anchor: anchor))
         .contentShape(shape)
@@ -795,8 +800,9 @@ private struct SelectMenuContent: View {
         .fixedSize()
         .background(SelectMenuSurface())
         .clipShape(shape)
-        .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Select.menuHairline) }
+        .overlay { Hairline(shape: shape, width: Theme.Select.menuHairline) }
         .accessibilityHidden(true)
+        .displayOptions()
     }
 }
 

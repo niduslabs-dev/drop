@@ -25,6 +25,8 @@ enum Theme {
         static let card: CGFloat = 14
         /// The thin hairline every card and sheet list carries, with no shadow.
         static let cardHairline: CGFloat = 0.5
+        /// Every hairline under Increase Contrast (`border.hairlineIncreasedContrast`).
+        static let hairlineIncreasedContrast: CGFloat = 1
     }
 
     /// The install panel's content inset, the same on all four sides (every panel board).
@@ -43,6 +45,8 @@ enum Theme {
         static let cornerRadius: CGFloat = 18
         /// The boards' card is the surface at 92% over the popover material.
         static let surfaceOpacity: Double = 0.92
+        /// The popup card's edge, a full point (the window-scale cards use `cardHairline`).
+        static let hairline: CGFloat = 1
         static let titleSpacing: CGFloat = 2
         static let updateTitleSpacing: CGFloat = 4
         static let buttonRowTopPadding: CGFloat = 2
@@ -611,6 +615,31 @@ enum Theme {
     }
 }
 
+/// Which of its four values a dynamic colour draws with. Increase Contrast counts when the
+/// appearance asks for it, and also whenever the system setting (or, in a debug build,
+/// `--increase-contrast`) is on: SwiftUI resolves `Color(nsColor:)` with a plain light or dark
+/// appearance even when its environment's contrast is increased, so the appearance alone never
+/// picks the high-contrast values.
+enum ColourLook {
+    case light, dark, lightContrast, darkContrast
+
+    init(_ appearance: NSAppearance) {
+        let match = appearance.bestMatch(from: [
+            .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+        ])
+        let isDark = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+        let increased =
+            match == .accessibilityHighContrastAqua || match == .accessibilityHighContrastDarkAqua
+            || DisplayOptions.increaseContrast
+        switch (isDark, increased) {
+        case (true, true): self = .darkContrast
+        case (true, false): self = .dark
+        case (false, true): self = .lightContrast
+        case (false, false): self = .light
+        }
+    }
+}
+
 extension NSColor {
     /// A colour from the kit: `light` and `dark`, and their Increase Contrast variants
     /// (`contrast` for light, `darkContrast` for dark; each falls back to its mode's value).
@@ -619,13 +648,11 @@ extension NSColor {
     ) -> NSColor {
         NSColor(name: nil) { appearance in
             let hex: UInt32
-            switch appearance.bestMatch(from: [
-                .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
-            ]) {
-            case .darkAqua: hex = dark
-            case .accessibilityHighContrastAqua: hex = contrast ?? light
-            case .accessibilityHighContrastDarkAqua: hex = darkContrast ?? dark
-            default: hex = light
+            switch ColourLook(appearance) {
+            case .dark: hex = dark
+            case .lightContrast: hex = contrast ?? light
+            case .darkContrast: hex = darkContrast ?? dark
+            case .light: hex = light
             }
             return NSColor(hex: hex, alpha: alpha)
         }
@@ -634,13 +661,11 @@ extension NSColor {
     /// One colour per appearance, for the translucent tokens.
     static func nidus(light: NSColor, dark: NSColor, contrast: NSColor, darkContrast: NSColor) -> NSColor {
         NSColor(name: nil) { appearance in
-            switch appearance.bestMatch(from: [
-                .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
-            ]) {
-            case .darkAqua: dark
-            case .accessibilityHighContrastAqua: contrast
-            case .accessibilityHighContrastDarkAqua: darkContrast
-            default: light
+            switch ColourLook(appearance) {
+            case .dark: dark
+            case .lightContrast: contrast
+            case .darkContrast: darkContrast
+            case .light: light
             }
         }
     }

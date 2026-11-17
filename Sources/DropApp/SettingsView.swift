@@ -145,9 +145,9 @@ struct SettingsView: View {
             Spacer(minLength: 0)
             // The label is the text on the left, so the ⓘ stays its own button; the switch
             // carries the name for VoiceOver.
-            Toggle(isOn: $preferences.skipFirstOpenPrompt) { EmptyView() }
+            Toggle("Skip the downloaded from the Internet prompt", isOn: $preferences.skipFirstOpenPrompt)
                 .toggleStyle(.nidusSwitch)
-                .fixedSize()
+                .labelsHidden()
                 .accessibilityLabel("Skip the downloaded from the Internet prompt")
         }
         .padding(.horizontal, Theme.Row.horizontalPadding)
@@ -301,7 +301,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         return AnyView(
             view
                 .environment(\.titleBarHeight, titleBarHeight)
-                .environment(\.settingsSizing, sizing))
+                .environment(\.settingsSizing, sizing)
+                .displayOptions())
     }
 
     private func contentHeightChanged(_ height: CGFloat) {

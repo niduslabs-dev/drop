@@ -26,6 +26,8 @@ enum Log {
 ///   `--reset-onboarding` clears the test domain's onboarding state and shows onboarding.
 ///   `--update-feed <url>` runs Sparkle against that appcast (a local test feed signed with
 ///   a throwaway key) and checks at once; without it debug builds never start Sparkle.
+///   `--increase-contrast` and `--reduce-transparency` draw Drop as those accessibility
+///   settings would (`DisplayOptions`), without changing the system's.
 ///
 /// Panel test launches (`--watch`, `--destination`, `--trash`) skip onboarding, so scripted
 /// install checks see the panel straight away; add `--reset-onboarding` to run it there.
@@ -45,6 +47,9 @@ struct LaunchOptions {
     var backgroundTest = false
     /// Debug: the test appcast Sparkle reads instead of `SUFeedURL`.
     var updateFeed: URL?
+    /// Debug: draw as Increase Contrast and Reduce Transparency would (`DisplayOptions`).
+    var increaseContrast = false
+    var reduceTransparency = false
 
     init(arguments: [String] = CommandLine.arguments) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -62,6 +67,8 @@ struct LaunchOptions {
                 case "--probe-handler": probeHandler = true
                 case "--reset-onboarding": resetOnboarding = true
                 case "--update-feed": updateFeed = iterator.next().flatMap(URL.init(string:))
+                case "--increase-contrast": increaseContrast = true
+                case "--reduce-transparency": reduceTransparency = true
             #endif
             default: break
             }

@@ -86,6 +86,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let appearance = launch.appearance {
                 NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
             }
+            if launch.increaseContrast {
+                // AppKit's own colours and the select's menu panel follow the window's
+                // appearance; SwiftUI's environment gets the flag through `displayOptions()`.
+                let isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                NSApp.appearance = NSAppearance(
+                    named: isDark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua)
+            }
         #endif
         Typeface.registerBundledFonts()
         FocusVisibility.shared.start()

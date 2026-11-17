@@ -83,6 +83,11 @@ final class FocusVisibility {
 /// after keyboard use (`FocusVisibility`) and while the window is key: SwiftUI gives the
 /// first control focus as soon as a window shows, and a ring the user didn't ask for would
 /// suggest keys go there.
+///
+/// The ring is in the view tree only while it shows. SwiftUI makes a button's or a select's
+/// accessibility frame the union of everything it draws, so a ring kept at opacity 0 would
+/// grow the control's frame by the ring's 4 pt on every side: VoiceOver's outline would be a
+/// 36 pt select instead of 28.
 struct FocusRing<S: InsettableShape>: ViewModifier {
     let isFocused: Bool
     let shape: S
@@ -91,10 +96,12 @@ struct FocusRing<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         let shown = isFocused && appearsActive && FocusVisibility.shared.isVisible
         content.overlay {
-            shape.inset(by: -(Theme.Control.focusRingOffset + Theme.Control.focusRing / 2))
-                .stroke(Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing)
-                .opacity(shown ? 1 : 0)
-                .allowsHitTesting(false)
+            if shown {
+                shape.inset(by: -(Theme.Control.focusRingOffset + Theme.Control.focusRing / 2))
+                    .stroke(Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
     }
 }
@@ -204,7 +211,7 @@ private struct NidusButtonBody: View {
                 .padding(.horizontal, horizontalPadding)
                 .frame(minWidth: heroWidth, minHeight: height)
                 .background(paper)
-                .overlay { shape.strokeBorder(Theme.Colour.hairline, lineWidth: Theme.Button.hairline) }
+                .overlay { Hairline(shape: shape, width: Theme.Button.hairline) }
         case .link(let colour):
             label
                 .font(font ?? Theme.Font.link)
@@ -254,6 +261,11 @@ private struct NidusButtonBody: View {
 /// The kit's switch (34 × 20, moss track, white knob): label on the left, switch on the
 /// right. The whole row toggles on click; Space toggles it when focused. Drop has no
 /// checkboxes; every on/off choice is this switch.
+///
+/// With `.labelsHidden()` it draws only the switch, and that is also its accessibility
+/// element and frame (34 × 20, as AppKit's switch), which VoiceOver outlines. Settings rows
+/// use it that way (`SwitchRow`); with the label drawn (the panel's Trash switch), the
+/// element is the whole row.
 struct NidusSwitchStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         NidusSwitchBody(configuration: configuration)
@@ -269,25 +281,35 @@ private struct NidusSwitchBody: View {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.labelsVisibility) private var labelsVisibility
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: Theme.Control.switchLabelSpacing) {
-            VStack(alignment: .leading, spacing: Theme.Control.captionSpacing) { configuration.label }
-            Spacer(minLength: 0)
+        content
+            .onTapGesture { toggle() }
+            .nidusFocusable($isFocused, enabled: isEnabled) { toggle() }
+            .opacity(isEnabled ? 1 : Theme.Control.disabledOpacity)
+            .animation(Theme.Motion.enable, value: isEnabled)
+            // One element named by the label's text (or the caller's accessibility label when
+            // it's hidden), read as a switch with its state, and toggled by VoiceOver's press
+            // like the native switch.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isToggle)
+            .accessibilityValue(configuration.isOn ? "on" : "off")
+            .accessibilityAction { toggle() }
+    }
+
+    @ViewBuilder private var content: some View {
+        if labelsVisibility == .hidden {
             track
+        } else {
+            HStack(spacing: Theme.Control.switchLabelSpacing) {
+                VStack(alignment: .leading, spacing: Theme.Control.captionSpacing) { configuration.label }
+                Spacer(minLength: 0)
+                track
+            }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
-        .onTapGesture { toggle() }
-        .nidusFocusable($isFocused, enabled: isEnabled) { toggle() }
-        .opacity(isEnabled ? 1 : Theme.Control.disabledOpacity)
-        .animation(Theme.Motion.enable, value: isEnabled)
-        // One element named by the label's text, read as a switch with its state, and
-        // toggled by VoiceOver's press like the native switch.
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isToggle)
-        .accessibilityValue(configuration.isOn ? "on" : "off")
-        .accessibilityAction { toggle() }
     }
 
     private func toggle() {
@@ -335,12 +357,16 @@ extension View {
                     lineWidth: Theme.Control.fieldBorder)
             }
             .overlay {
-                shape.inset(by: -(Theme.Control.focusRingOffset + Theme.Control.focusRing / 2))
-                    .stroke(
-                        isError ? Theme.Colour.error : Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing
-                    )
-                    .opacity(isError || (isFocused && FocusVisibility.shared.isVisible) ? 1 : 0)
-                    .allowsHitTesting(false)
+                // In the tree only while shown, as `FocusRing`, so the field's accessibility
+                // frame stays the field's own.
+                if isError || (isFocused && FocusVisibility.shared.isVisible) {
+                    shape.inset(by: -(Theme.Control.focusRingOffset + Theme.Control.focusRing / 2))
+                        .stroke(
+                            isError ? Theme.Colour.error : Theme.Colour.focusRing, lineWidth: Theme.Control.focusRing
+                        )
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
             .animation(Theme.Motion.hover, value: isFocused)
     }

@@ -560,7 +560,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
                 styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
             var view = makeView { [weak self] in self?.window?.performClose(nil) }
             view.titleBarHeight = window.frame.height - window.contentLayoutRect.height
-            let controller = NSHostingController(rootView: view)
+            let controller = NSHostingController(rootView: view.displayOptions())
             controller.sizingOptions = []
             window.contentViewController = controller
             window.setContentSize(NSSize(width: Theme.Onboarding.width, height: Theme.Onboarding.height))
