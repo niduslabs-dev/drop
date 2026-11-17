@@ -1,6 +1,7 @@
 import DiskImage
 import Foundation
 import ReaderCore
+import Synchronization
 import Testing
 import Verifier
 
@@ -54,6 +55,37 @@ struct InstallSessionFixtureTests {
         #expect(seen.first == "reading")
         #expect(seen.contains("preparing"))
         #expect(seen.last == "warning")
+        await session.cancel()
+    }
+
+    /// The image's device (its decoded-chunk cache and file descriptor) is held while the
+    /// pipeline runs and released once it settles, so a panel waiting on `warning` or
+    /// `ready` doesn't keep it.
+    @Test func imageIsReleasedOnceSettled() async throws {
+        let scratch = try Scratch("release")
+        defer { scratch.remove() }
+        let entered = Atomic<Bool>(false)
+        let gate = Atomic<Bool>(false)
+        var options = scratch.options()
+        options.verify = { app, qos in
+            entered.store(true, ordering: .releasing)
+            while !gate.load(ordering: .acquiring) { try? await Task.sleep(for: .milliseconds(10)) }
+            return await Verifier.verdict(app: app, qos: qos)
+        }
+        let session = InstallSession(dmg: try Fixtures.dmg("one-app"), options: options)
+        await session.start()
+        // Staged and held in the check: the pipeline still has the device.
+        let held = await waitFor(session) { entered.load(ordering: .acquiring) || $0.isFinal }
+        try #require(!held.isFinal, "got \(held)")
+        #expect(await session.decodePolicy != nil, "a compressed image has a device until the verdict")
+        gate.store(true, ordering: .releasing)
+        let settled = await waitFor(session) { $0.isSettled }
+        guard case .warning = settled else {
+            Issue.record("expected warning, got \(settled)")
+            return
+        }
+        await session.waitUntilDone()
+        #expect(await session.decodePolicy == nil, "the session still holds the image")
         await session.cancel()
     }
 

@@ -156,9 +156,13 @@ public actor InstallSession {
     /// The licence screen's early read, reused once the licence is accepted.
     private var early: EarlyRead?
     private var staged: StagedApp?
-    /// For tests: the area being written, and the image's device.
+    /// For tests: the area being written.
     private(set) var stagingArea: StagingArea?
-    private var device: UDIFDevice?
+    /// The image's device, for a boost and for tests. Weak: nothing reads the image once the
+    /// app is staged, so the session must not keep its decoded-chunk cache (up to the decode
+    /// policy's budget, ~30 MiB) and file descriptor alive while the panel waits on `ready`.
+    /// The pipeline's own frames hold it until the verdict is in.
+    private weak var device: UDIFDevice?
     /// The latest progress, kept while `waitingToPrepare` hides it.
     private var lastProgress = InstallProgress(bytesDone: 0, bytesTotal: 0)
     /// Watches `options.conditions` while staging and the check run.
@@ -407,7 +411,8 @@ public actor InstallSession {
         } ?? nil
     }
 
-    /// The image device's decode policy right now; nil for raw images or before staging.
+    /// The image device's decode policy right now; nil for raw images, before staging, and
+    /// once the pipeline has settled and released the image.
     var decodePolicy: DecodePolicy? { device?.decodePolicy }
 
     // MARK: - The pipeline
