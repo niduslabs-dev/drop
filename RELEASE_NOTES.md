@@ -4,6 +4,10 @@ The release workflow takes the section for the version it builds: its "- " lines
 GitHub release and the update feed, and the first three show in Drop's update popup. Keep
 them short, one change per line.
 
+## 1.0.5
+
+- The copied size always shows one decimal, so it rolls without jumping
+
 ## 1.0.4
 
 - Uses less memory while numbers roll

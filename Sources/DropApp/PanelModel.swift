@@ -227,15 +227,40 @@ enum Format {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
     }
 
-    /// "44 of 84 MB": both in the total's unit.
-    static func progress(_ progress: InstallProgress) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        let total = formatter.string(fromByteCount: Int64(clamping: progress.bytesTotal))
-        formatter.includesUnit = false
-        let done = formatter.string(fromByteCount: Int64(clamping: progress.bytesDone))
-        return "\(done) of \(total)"
+    /// "44.0 of 84.0 MB": both in the total's unit, always with one decimal. The fixed decimal
+    /// keeps the copied number's width steady (9.5 to 10 would drop it), so `RollingNumber`
+    /// slides the line's unchanged characters as one plain `Text` instead of falling back to
+    /// `RollBaseRenderer` and its 100 MB. The copied number rounds down, so it reads the total
+    /// only once everything is copied.
+    static func progress(_ progress: InstallProgress, locale: Locale = .current) -> String {
+        var exponent = 1
+        while exponent < byteUnits.count - 1,
+            Double(progress.bytesTotal) / pow(1000, Double(exponent + 1)) >= 1 - tenthRoundingMargin
+        {
+            exponent += 1
+        }
+        let divisor = pow(1000, Double(exponent))
+        let number = NumberFormatter()
+        number.locale = locale
+        number.numberStyle = .decimal
+        number.minimumFractionDigits = 1
+        number.maximumFractionDigits = 1
+        let total = number.string(from: Double(progress.bytesTotal) / divisor as NSNumber) ?? ""
+        number.roundingMode = .down
+        let done = number.string(from: Double(progress.bytesDone) / divisor as NSNumber) ?? ""
+        let unit = ByteCountFormatter()
+        unit.countStyle = .file
+        unit.allowedUnits = byteUnits[exponent]
+        unit.includesCount = false
+        let name = unit.string(fromByteCount: Int64(clamping: progress.bytesTotal))
+        return "\(done) of \(total) \(name)"
     }
+
+    /// The decimal units `progress` can show, by power of 1,000.
+    private static let byteUnits: [ByteCountFormatter.Units] = [.useBytes, .useKB, .useMB, .useGB, .useTB]
+    /// A total within half a tenth of the next unit (999.96 MB) shows in that unit (1.0 GB),
+    /// not as "1,000.0 MB".
+    private static let tenthRoundingMargin = 0.00005
 }
 
 extension String {
