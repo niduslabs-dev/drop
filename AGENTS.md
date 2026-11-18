@@ -73,14 +73,14 @@ Releases are Developer ID signed, notarized and stapled DMGs on GitHub Releases,
 **Cut a release:**
 
 1. Add a `## X.Y.Z` section to `RELEASE_NOTES.md`: short "- " lines, one change each. The first three show in the update popup.
-2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. Or run Actions › Release with a version (it tags the current commit).
+2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` environment only admits `v*` tags, so a real release always starts from a pushed tag; Actions › Release by hand is for the dry run.
 3. The `release` environment holds the job; with required reviewers set, approve it there.
    - Before any secret, `.github/scripts/ci-passed.sh` looks for a passing CI run on the tagged commit, or on the commit under it that differs only in files CI ignores (the release-notes commit on top counts). A CI run still going is not waited for (releases are normally tagged after CI is green). With no pass, the release runs `.github/scripts/test.sh` itself (lint, fixtures, build, tests, as CI). Either way a release never ships code that fails its checks.
 4. The workflow builds with `VERSION=BUILD=X.Y.Z`, signs inside out (Sparkle's `Autoupdate`, `Updater.app`, the framework, then the app; hardened runtime, timestamp), builds `Drop-X.Y.Z.dmg` (the app plus an Applications link, `hdiutil`, signed), notarizes it (`notarytool --wait`), staples and `spctl`-assesses it, signs it with Sparkle's `sign_update`, writes `appcast.xml` (`scripts/appcast.sh`) and hands them to the `publish` job (Linux, the only job with `contents: write`), which publishes them as the latest release.
 
 **Dry run:** Actions › Release › Run workflow with a version and `dry_run` ticked. Same steps up to the DMG, signed ad hoc and not notarized, appcast with a placeholder signature, nothing uploaded. It takes no environment and skips every step that names a secret, and has its own concurrency group, so it can't cancel a release waiting in line. Safe any time.
 
-**Secrets** (repo secrets; never printed, never on disk longer than one step):
+**Secrets** (in the `release` environment since 2026-11-18, readable only by a release job on a `v*` tag; set from the workspace `creds/` the same way as Pane; never printed, never on disk longer than one step):
 
 | Secret | What |
 |---|---|
