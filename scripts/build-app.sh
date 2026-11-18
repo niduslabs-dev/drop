@@ -116,6 +116,10 @@ cp Resources/Fonts/Manrope-Variable.ttf Resources/Fonts/OFL.txt "$APP/Contents/R
 # scripts/sync-icon.sh, so this repo builds on its own.
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+# The release notes the app was built from, for What's new in Settings (the installed
+# version and every older one; a pending update's notes come from the appcast).
+cp RELEASE_NOTES.md "$APP/Contents/Resources/RELEASE_NOTES.md"
+
 # Inside out, as Sparkle's guide lists it, never --deep: each nested executable gets the
 # hardened runtime and the identity, then the framework, then the app.
 if [ "$SIGN_IDENTITY" = - ]; then TIMESTAMP=--timestamp=none; else TIMESTAMP=--timestamp; fi

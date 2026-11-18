@@ -4,8 +4,9 @@ import SwiftUI
 /// The SettingsWindow primitive (SettingsV2 board): a "Settings" page title inside the
 /// content, then groups of SettingsRows in r14 cards. One setting per row, one caption
 /// line at most, longer text behind an ⓘ, lists in a sheet, no footer notes. Pausing is
-/// the Ask switch; Quit Drop is in the last group, since Drop has no menu bar menu. While an
-/// update waits for a restart its banner leads the page (Updates board).
+/// the Ask switch; Quit Drop is in the last group, since Drop has no menu bar menu. The
+/// version row is the whole update surface (UpdatesInRow board): its line and capsule follow
+/// every step, and What's new opens the release notes in a sheet.
 struct SettingsView: View {
     @Bindable var preferences: Preferences
     @Bindable var updates: UpdateModel
@@ -13,14 +14,16 @@ struct SettingsView: View {
     let setOpenAtLogin: (Bool) -> Void
     let setOpensDiskImages: (Bool) -> Void
     let quit: () -> Void
-    /// The app's version, for the last group.
-    var version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
     @Environment(\.titleBarHeight) private var titleBarHeight
     @Environment(\.settingsSizing) private var sizing
     @State private var showsSkipInfo = false
     @State private var scrollPosition = ScrollPosition(edge: .top)
+    @State private var showsNotes = false
+    @State private var whatsNewFocus = FocusLink()
     @Environment(\.settingsDemoOffset) private var demoOffset
+    @Environment(\.settingsScrollToUpdates) private var scrollToUpdates
+    @Environment(\.settingsOpensNotes) private var opensNotes
 
     /// The scroll view fills the window below the title bar, and the window controller
     /// sizes the window to the page (`SettingsSizing`), so the page's own insets are the
@@ -35,6 +38,9 @@ struct SettingsView: View {
         }
         .scrollPosition($scrollPosition)
         .onChange(of: demoOffset, initial: true) { if let demoOffset { scrollPosition.scrollTo(y: demoOffset) } }
+        .onChange(of: scrollToUpdates, initial: true) {
+            if scrollToUpdates > 0 { scrollPosition.scrollTo(edge: .bottom) }
+        }
         .scrollBounceBehavior(.always, axes: .vertical)
         .scrollIndicators(.automatic)
         .mask { scrollEdgeMask }
@@ -43,6 +49,21 @@ struct SettingsView: View {
         .padding(.top, titleBarHeight)
         .background(SurfaceBackground(kind: .settings).ignoresSafeArea())
         .foregroundStyle(Theme.Colour.bodyText)
+        .overlay {
+            // The Sheet primitive dims its parent.
+            if showsNotes { Theme.Colour.scrim.ignoresSafeArea().allowsHitTesting(false).transition(.opacity) }
+        }
+        .animation(Theme.Motion.fade, value: showsNotes)
+        .sheet(isPresented: $showsNotes, onDismiss: { whatsNewFocus.request() }) {
+            ReleaseNotesSheet(
+                appName: UpdateModel.appName,
+                groups: updates.releaseNoteGroups(bundled: updates.bundledNotes),
+                allNotesURL: UpdateModel.allReleaseNotesURL, openURL: updates.openURL
+            ) { showsNotes = false }
+            .presentationBackground { SurfaceBackground(kind: .sheet) }
+            .displayOptions()
+        }
+        .onChange(of: opensNotes, initial: true) { if opensNotes { showsNotes = true } }
     }
 
     /// The scroll-edge effect. The scroll view starts below the title bar and clips there,
@@ -66,7 +87,6 @@ struct SettingsView: View {
                 .accessibilityAddTraits(.isHeader)
                 .padding(.bottom, Theme.Settings.titleToGroups)
             VStack(alignment: .leading, spacing: Theme.Settings.groupSpacing) {
-                if updates.isReady { UpdateBanner(model: updates) }
                 group("Watching") {
                     SwitchRow(
                         title: "Ask when a new disk image arrives", caption: "Turn off to pause watching.",
@@ -93,11 +113,13 @@ struct SettingsView: View {
                         isOn: handlerBinding)
                 }
                 group("Drop") {
-                    // The caption reads the clock when the page draws; Settings is redrawn on
-                    // every open and on each update event, which is often enough for "today".
-                    SettingsRow(version.isEmpty ? "Drop" : "Version \(version)", caption: updates.versionCaption()) {
-                        Button("Check for updates") { updates.perform(.check) }.buttonStyle(.nidusSmall)
-                            .disabled(!updates.isEnabled || updates.phase == .checking)
+                    // The line reads the clock: "checked just now" turns into the time after a
+                    // minute without another update event.
+                    TimelineView(.periodic(from: .now, by: UpdateModel.justNow / 2)) { context in
+                        let row = updates.row(now: context.date)
+                        UpdateRow(
+                            content: row, action: { updates.perform(updates.rowAction) },
+                            whatsNew: { showsNotes = true }, whatsNewFocus: whatsNewFocus)
                     }
                     SwitchRow(
                         title: "Install updates automatically",
@@ -183,6 +205,11 @@ extension EnvironmentValues {
     @Entry var settingsDemoOffset: CGFloat?
     /// Where the Settings page reports its height (`SettingsSizing`).
     @Entry var settingsSizing: SettingsSizing?
+    /// Bumped to scroll Settings to the version row (Drop's own disk image's Check for
+    /// updates). 0 leaves the page where it is.
+    @Entry var settingsScrollToUpdates = 0
+    /// Debug: Settings opens with What's new up (`--demo`).
+    @Entry var settingsOpensNotes = false
 }
 
 /// Takes the Settings window's full content height (title bar, then the page with its gap
@@ -240,20 +267,41 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let makeView: () -> AnyView
     /// Runs before each show, to refresh values that live outside Drop.
     private let onShow: () -> Void
+    /// Runs when the window closes.
+    private let onClose: () -> Void
+    /// Bumped by `showAtUpdates()`; the page scrolls to the version row on each change.
+    private var scrollToUpdates = 0
+    #if DEBUG
+        /// `--demo`: the page opens with What's new up.
+        var demoOpensNotes = false
+    #endif
     /// The content height last reported (title bar and page), 0 until the page has laid out.
     private var contentHeight: CGFloat = 0
     /// Set by `show()` until the window has its size: it's centred and brought forward then.
     private var presentPending = false
     private lazy var sizing = SettingsSizing { [weak self] height in self?.contentHeightChanged(height) }
 
-    init(makeView: @escaping () -> AnyView, onShow: @escaping () -> Void = {}) {
+    init(makeView: @escaping () -> AnyView, onShow: @escaping () -> Void = {}, onClose: @escaping () -> Void = {}) {
         self.makeView = makeView
         self.onShow = onShow
+        self.onClose = onClose
     }
 
     var isVisible: Bool { window?.isVisible ?? false }
 
-    func windowWillClose(_ notification: Notification) { ActivationPolicy.closed(.settings) }
+    func windowWillClose(_ notification: Notification) {
+        ActivationPolicy.closed(.settings)
+        onClose()
+    }
+
+    /// Opens Settings scrolled to the version row (Drop's own disk image's Check for updates).
+    func showAtUpdates() {
+        scrollToUpdates += 1
+        show()
+    }
+
+    /// The What's new sheet's window while it's up, for captures.
+    var sheetWindowNumber: Int? { window?.attachedSheet?.windowNumber }
 
     var windowNumber: Int? { window?.windowNumber }
 
@@ -298,10 +346,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func root(_ view: AnyView) -> AnyView {
         guard let window else { return view }
         let titleBarHeight = window.frame.height - window.contentLayoutRect.height
+        var opensNotes = false
+        #if DEBUG
+            opensNotes = demoOpensNotes
+        #endif
         return AnyView(
             view
                 .environment(\.titleBarHeight, titleBarHeight)
                 .environment(\.settingsSizing, sizing)
+                .environment(\.settingsScrollToUpdates, scrollToUpdates)
+                .environment(\.settingsOpensNotes, opensNotes)
                 .displayOptions())
     }
 

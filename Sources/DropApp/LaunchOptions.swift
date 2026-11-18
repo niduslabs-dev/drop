@@ -47,6 +47,11 @@ struct LaunchOptions {
     var backgroundTest = false
     /// Debug: the test appcast Sparkle reads instead of `SUFeedURL`.
     var updateFeed: URL?
+    /// Debug, with `--update-feed`: how the test copy meets its update. `settings-check` runs
+    /// Drop's own disk image's Check for updates (Settings at the row, then the check);
+    /// `settings-open` opens Settings before the background check, which must not raise the
+    /// popup.
+    var updateStart: String?
     /// Debug: draw as Increase Contrast and Reduce Transparency would (`DisplayOptions`).
     var increaseContrast = false
     var reduceTransparency = false
@@ -67,6 +72,7 @@ struct LaunchOptions {
                 case "--probe-handler": probeHandler = true
                 case "--reset-onboarding": resetOnboarding = true
                 case "--update-feed": updateFeed = iterator.next().flatMap(URL.init(string:))
+                case "--update-start": updateStart = iterator.next()
                 case "--increase-contrast": increaseContrast = true
                 case "--reduce-transparency": reduceTransparency = true
             #endif

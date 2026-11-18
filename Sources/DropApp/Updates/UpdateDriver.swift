@@ -14,10 +14,17 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     private var updater: SPUUpdater?
     /// `--update-feed`, debug only.
     private let feedOverride: URL?
+    /// The download's length, once the server sends it, and what has arrived so far.
+    private var expectedLength: UInt64 = 0
+    private var receivedLength: UInt64 = 0
 
-    init(model: UpdateModel, feedOverride: URL? = nil) {
+    /// A test feed starts with a background check unless the launch starts its own.
+    private let checksAtStart: Bool
+
+    init(model: UpdateModel, feedOverride: URL? = nil, checksAtStart: Bool = true) {
         self.model = model
         self.feedOverride = feedOverride
+        self.checksAtStart = checksAtStart
         super.init()
     }
 
@@ -38,7 +45,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         model.lastChecked = updater.lastUpdateCheckDate
         model.requestCheck = { [weak self] in self?.checkNow() }
         model.automaticChanged = { [weak self] in self?.updater?.automaticallyDownloadsUpdates = $0 }
-        if feedOverride != nil { updater.checkForUpdatesInBackground() }
+        if feedOverride != nil, checksAtStart { updater.checkForUpdatesInBackground() }
     }
 
     private func checkNow() {
@@ -49,6 +56,10 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     // MARK: SPUUpdaterDelegate
 
     func feedURLString(for updater: SPUUpdater) -> String? { feedOverride?.absoluteString }
+
+    /// A debug copy run against a test feed installs but never relaunches: the relaunch would
+    /// be a plain launch, without `--background-test`, and could take focus.
+    func updaterShouldRelaunchApplication(_ updater: SPUUpdater) -> Bool { feedOverride == nil }
 
     /// A background download is ready. Returning true keeps Sparkle from presenting it
     /// later itself; it still installs when Drop quits (Later), or at once through
@@ -106,13 +117,27 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         acknowledgement()
     }
 
-    func showDownloadInitiated(cancellation: @escaping () -> Void) {}
+    func showDownloadInitiated(cancellation: @escaping () -> Void) {
+        expectedLength = 0
+        receivedLength = 0
+        model.downloadStarted()
+    }
 
-    func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) {}
+    func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) {
+        expectedLength = expectedContentLength
+        receivedLength = 0
+        if expectedLength > 0 { model.downloadProgressed(0) }
+    }
 
-    func showDownloadDidReceiveData(ofLength length: UInt64) {}
+    func showDownloadDidReceiveData(ofLength length: UInt64) {
+        receivedLength += length
+        // No percentage until the length is known ("Downloading 1.1…").
+        guard expectedLength > 0 else { return }
+        model.downloadProgressed(Double(receivedLength) / Double(expectedLength))
+    }
 
-    func showDownloadDidStartExtractingUpdate() {}
+    /// Unpacking, then Sparkle checks both signatures: "Preparing 1.1…".
+    func showDownloadDidStartExtractingUpdate() { model.preparing() }
 
     func showExtractionReceivedProgress(_ progress: Double) {}
 

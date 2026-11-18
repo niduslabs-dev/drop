@@ -1,8 +1,16 @@
 # Release notes
 
 The release workflow takes the section for the version it builds: its "- " lines go in the
-GitHub release and the update feed, and the first three show in Drop's update popup. Keep
-them short, one change per line.
+GitHub release and the update feed. The first three show in Drop's update popup, and every
+line shows in What's new in Settings, which bundles this file. Keep them short, one change per
+line, with no full stop at the end.
+
+## 1.0.6
+
+- Settings shows an update in the version row, step by step
+- What's new in Settings lists every release note
+- A check started in Settings says when it fails, with Try again
+- Settings in light mode is easier to read
 
 ## 1.0.5
 

@@ -71,17 +71,49 @@ enum Theme {
 
     /// Where the popup sits: the Arrival board's top right, this far inside the visible
     /// frame (below the menu bar, left of the Dock if it's on the right).
-    /// The Updates board: the update popup and the Settings banner.
+    /// The Updates board: the update popup.
     enum Update {
         /// Title to the "1.0 → 1.1" line.
         static let titleSpacing: CGFloat = 3
         /// Between release-note lines.
         static let noteSpacing: CGFloat = Space.xxs
         static let bulletGap: CGFloat = Space.xs
-        static let bannerSpacing: CGFloat = Space.m
-        static let bannerIcon: CGFloat = 28
-        /// The banner's moss tint over the window.
-        static let bannerFillOpacity: Double = 0.10
+    }
+
+    /// The UpdatesInRow board: the version row in Settings.
+    enum UpdateRow {
+        /// Between What's new and the row's action.
+        static let buttonGap: CGFloat = Button.spacing
+        /// The mini spinner to the line it leads.
+        static let spinnerGap: CGFloat = Space.xs
+    }
+
+    /// The Sheet primitive, list state (`size.sheet`): What's new.
+    enum Sheet {
+        static let width: CGFloat = 560
+        static let height: CGFloat = 480
+        static let inset: CGFloat = Space.xl
+        /// Title to description, description to the body card, body card to the footer.
+        static let descriptionGap: CGFloat = Space.s
+        static let bodyGap: CGFloat = Space.l
+        static let footerGap: CGFloat = Space.xl
+        /// A version group inside the body card.
+        static let groupHorizontalPadding: CGFloat = Space.l
+        static let groupVerticalPadding: CGFloat = Space.m
+        /// Version to its tag, and to its first line.
+        static let tagGap: CGFloat = Space.s
+        static let versionToLines: CGFloat = Space.xs
+        /// The tag pill: group label type, a hairline, padded 8 × 2.
+        static let tagHorizontalPadding: CGFloat = Space.s
+        static let tagVerticalPadding: CGFloat = Space.xxxs
+        /// Between note lines, the bullet's indent, and the board's 1.45 line height on
+        /// 12 pt notes (0.45 × 12).
+        static let lineGap: CGFloat = Space.xxs
+        static let bulletIndent: CGFloat = Space.l
+        static let noteLineSpacing: CGFloat = 5.4
+        /// Arrow keys and Page keys scroll the focused list by these.
+        static let arrowScroll: CGFloat = 40
+        static let pageOverlap: CGFloat = 40
     }
 
     enum Popup {
@@ -525,6 +557,18 @@ enum Theme {
         static let separator = Color(nsColor: .hairline)
         static let textBackground = Color(nsColor: .textBackgroundColor)
         static let folder = link
+        /// Menu panels and sheets (`color.role.surfaceMenu`): white; dark is ink at 96% over
+        /// the behind-window blur, solid where none is drawn.
+        static let menuSurface = Color(
+            nsColor: .nidus(
+                light: NSColor(hex: 0xFFFFFF), dark: NSColor(hex: 0x24232B, alpha: 0.96),
+                contrast: NSColor(hex: 0xFFFFFF), darkContrast: NSColor(hex: 0x24232B)))
+        static let menuSurfaceSolid = Color(nsColor: .nidus(light: 0xFFFFFF, dark: 0x24232B))
+        /// The dim over a window behind a sheet (`color.role.scrim`).
+        static let scrim = Color(
+            nsColor: .nidus(
+                light: NSColor(hex: 0x17161C, alpha: 0.2), dark: NSColor(hex: 0x000000, alpha: 0.36),
+                contrast: NSColor(hex: 0x17161C, alpha: 0.2), darkContrast: NSColor(hex: 0x000000, alpha: 0.36)))
     }
 
     /// Motion values from Purge (`.claude/research/purge-design.md`), re-implemented. Every

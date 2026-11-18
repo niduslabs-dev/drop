@@ -98,7 +98,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FocusVisibility.shared.start()
         panel = PanelWindowController()
         controller = InstallController(
-            preferences: preferences, store: store, launch: launch, panel: panel, updateCheck: .live(updates))
+            preferences: preferences, store: store, launch: launch, panel: panel,
+            updateCheck: .live(updates) { [weak self] in self?.settings.showAtUpdates() })
         settings = SettingsWindowController { [weak self] in
             guard let self else { return AnyView(EmptyView()) }
             return AnyView(
@@ -111,6 +112,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     quit: { NSApp.terminate(nil) }))
         } onShow: { [weak self] in
             self?.preferences.opensDiskImages = DiskImageHandler.isDropDefault
+            self?.updates.settingsOpen = true
+        } onClose: { [weak self] in
+            guard let self else { return }
+            updates.settingsOpen = false
+            if updates.justUpdated {
+                updates.justUpdated = false
+                LastRunVersion.noticeSeen(defaults: defaults)
+            }
         }
         // A background test copy never answers another launch: a release test build shares
         // the release name, and a launch of the user's own copy must not open a window here.
@@ -153,6 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         preferences.opensDiskImages = DiskImageHandler.isDropDefault
         observePreferences()
+        updates.justUpdated = LastRunVersion.launched(
+            updates.currentVersion, defaults: defaults,
+            hasRunBefore: defaults.object(forKey: OnboardingCoordinator.defaultsKey) != nil)
         startOnboarding()
         updateWatcher()
         startUpdates()
@@ -168,10 +180,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #else
             guard !launch.isTesting else { return }
         #endif
+        #if DEBUG
+            traceUpdates()
+            switch launch.updateStart {
+            case "settings-open": settings.show()
+            case "settings-check":
+                let driver = UpdateDriver(model: updates, feedOverride: feed, checksAtStart: false)
+                driver.start()
+                updateDriver = driver
+                UpdateCheck.live(updates) { [weak self] in self?.settings.showAtUpdates() }.run()
+                return
+            default: break
+            }
+        #endif
         let driver = UpdateDriver(model: updates, feedOverride: feed)
         driver.start()
         updateDriver = driver
     }
+
+    #if DEBUG
+        /// A test-feed run prints each row line and popup change to stdout
+        /// (`.claude/checks/update-e2e.sh` reads them).
+        private func traceUpdates() {
+            withObservationTracking {
+                let row = updates.row()
+                let percent = row.percent.map { " \u{00B7} \($0)%" } ?? ""
+                print(
+                    "UPDATE_ROW \(row.caption)\(percent) | \(row.button)\(row.buttonEnabled ? "" : " (dimmed)")"
+                        + " | popup=\(updates.wantsPopup) settings=\(updates.settingsOpen)")
+                fflush(stdout)
+            } onChange: {
+                Task { @MainActor [weak self] in self?.traceUpdates() }
+            }
+        }
+    #endif
 
     // MARK: Onboarding
 

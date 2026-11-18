@@ -27,20 +27,20 @@ struct UpdatePopupView: View {
                 }
             }
             if let notes = model.update?.notes, !notes.isEmpty {
-                NotesCard(lines: notes)
+                NotesCard(lines: Array(notes.prefix(ReleaseNotes.popupLimit)))
             }
             ButtonRow {
                 if model.update?.releaseNotesURL != nil {
                     Button("Release notes") { model.openReleaseNotes() }.buttonStyle(.nidusLink())
                 }
             } trailing: {
-                Button("Later") { model.perform(.later) }.buttonStyle(.nidusSecondary)
+                Button("Later") { model.perform(.later, from: .popup) }.buttonStyle(.nidusSecondary)
                     .keyboardShortcut(.cancelAction)
                 if case .available = model.phase {
-                    Button("Download") { model.perform(.download) }.buttonStyle(.nidusPrimary)
+                    Button("Download") { model.perform(.download, from: .popup) }.buttonStyle(.nidusPrimary)
                         .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Restart to update") { model.perform(.restart) }.buttonStyle(.nidusPrimary)
+                    Button("Restart to update") { model.perform(.restart, from: .popup) }.buttonStyle(.nidusPrimary)
                         .keyboardShortcut(.defaultAction)
                 }
             }
@@ -84,32 +84,6 @@ private struct NotesCard: View {
     }
 }
 
-/// The banner at the top of Settings while an update waits for a restart: "Drop 1.1 is
-/// ready", "Installs next time Drop quits, or now." and Restart to Update.
-struct UpdateBanner: View {
-    let model: UpdateModel
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-        HStack(spacing: Theme.Update.bannerSpacing) {
-            DropIcon(size: Theme.Update.bannerIcon)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.popupTitle).font(Theme.Font.calloutTitle).foregroundStyle(Theme.Colour.bodyText)
-                Text("Installs next time Drop quits, or now.").font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Colour.secondaryText)
-            }
-            Spacer(minLength: 0)
-            Button("Restart to update") { model.perform(.restart) }
-                .buttonStyle(NidusButtonStyle(kind: .primary, size: .small))
-        }
-        .padding(.horizontal, Theme.Row.horizontalPadding)
-        .padding(.vertical, Theme.Row.verticalPadding)
-        .background(Theme.Colour.accent.opacity(Theme.Update.bannerFillOpacity), in: shape)
-        .overlay { Hairline(shape: shape) }
-        .accessibilityElement(children: .contain)
-    }
-}
-
 /// The update popup's window: the same non-activating `PopupPanel` as an install popup, at
 /// the same top-right spot. An install popup or window wins: while one is up the update
 /// popup waits, and comes back when it closes.
@@ -125,7 +99,7 @@ final class UpdatePopupController {
         self.model = model
         self.installPanel = installPanel
         popup.title = "Drop Update"
-        popup.onCancel = { [weak model] in model?.perform(.later) }
+        popup.onCancel = { [weak model] in model?.perform(.later, from: .popup) }
         observe()
     }
 

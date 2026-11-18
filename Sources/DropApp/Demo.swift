@@ -35,24 +35,28 @@
     /// `roll-soak` plays the popup's number rolls over and over for a memory soak.
     @MainActor
     enum Demo {
-        static let states = [
-            "reading", "main", "identified", "preparing", "waiting", "installing", "done", "update", "update-running",
-            "warning",
-            "unsigned", "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password", "password-wrong",
-            "progress-30", "progress-62", "settings", "settings-mid",
-            "settings-bottom", "settings-reopen", "done-long", "window", "window-licence",
-            "window-licence-one",
-            "window-installing", "window-progress-30", "window-progress-62", "window-done", "window-warning",
-            "window-refused", "window-update", "onboarding-1",
-            "onboarding-2", "onboarding-2-denied", "onboarding-3",
-            "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
-            "select-main", "select-main-hover", "select-window", "select-window-key", "update-ready",
-            "update-available", "update-ready-plain", "settings-update", "settings-update-idle",
-            "settings-update-bottom", "settings-update-idle-bottom", "open-after", "open-after-fail",
-            "window-open-after", "window-open-after-fail", "update-flow", "update-flow-timeout",
-            "window-update-flow", "window-update-flow-timeout", "self-newer", "self-same", "window-self-newer",
-            "window-self-same", "done-update", "size-lands", "window-size-lands", "roll-soak",
-        ]
+        static let states =
+            [
+                "reading", "main", "identified", "preparing", "waiting", "installing", "done", "update",
+                "update-running",
+                "warning",
+                "unsigned", "refused", "pkg", "case", "wontattach", "licence", "licence-one", "password",
+                "password-wrong",
+                "progress-30", "progress-62", "settings", "settings-mid",
+                "settings-bottom", "settings-reopen", "done-long", "window", "window-licence",
+                "window-licence-one",
+                "window-installing", "window-progress-30", "window-progress-62", "window-done", "window-warning",
+                "window-refused", "window-update", "onboarding-1",
+                "onboarding-2", "onboarding-2-denied", "onboarding-3",
+                "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
+                "select-main", "select-main-hover", "select-window", "select-window-key", "update-ready",
+                "update-available", "update-ready-plain", "settings-update", "settings-update-idle",
+                "settings-update-bottom", "settings-update-idle-bottom", "open-after", "open-after-fail",
+                "window-open-after", "window-open-after-fail", "update-flow", "update-flow-timeout",
+                "window-update-flow", "window-update-flow-timeout", "self-newer", "self-same", "window-self-newer",
+                "window-self-same", "done-update", "size-lands", "window-size-lands", "roll-soak",
+                "row-downloading-roll", "notes", "notes-idle", "notes-empty",
+            ] + rowStates.map { "row-\($0)" }
 
         private static let lineaBlue = Color(red: 0x2F / 255, green: 0x6F / 255, blue: 0xEB / 255)
         private static let tinkerPurple = Color(red: 0x8E / 255, green: 0x5B / 255, blue: 0xD8 / 255)
@@ -78,7 +82,9 @@
                 runOnboarding(state, app: app)
                 return
             }
-            if state.hasPrefix("update-") || state.hasPrefix("settings-update") {
+            if state.hasPrefix("update-") || state.hasPrefix("settings-update") || state.hasPrefix("row-")
+                || state.hasPrefix("notes")
+            {
                 runUpdate(state, app: app)
                 return
             }
@@ -118,7 +124,7 @@
             }
             let model = makeModel(state)
             model.send = { action in
-                if action == .checkForUpdates { UpdateCheck.live(app.updates).run() }
+                if action == .checkForUpdates { UpdateCheck.live(app.updates) { app.settings.showAtUpdates() }.run() }
                 if [.close, .notNow, .checkForUpdates].contains(action) { NSApp.terminate(nil) }
             }
             Task {
@@ -137,11 +143,27 @@
             ],
             releaseNotesURL: URL(string: "https://github.com/niduslabs-dev/drop/releases"))
 
-        /// Update surfaces with the board's sample on a model of their own (Sparkle never
-        /// runs): `update-ready` and `update-available` (automatic installs off) are the
-        /// popup, `update-ready-plain` the popup without notes, `settings-update` Settings
-        /// with the ready banner, `settings-update-idle` Settings with nothing pending; a
-        /// `-bottom` suffix scrolls Settings to the Drop group.
+        /// The UpdatesInRow board's example update: 1.0.6, over an installed 1.0.5 (build the
+        /// demo copy with `VERSION=1.0.5`).
+        private static let rowUpdate = AvailableUpdate(
+            version: "1.0.6", size: 4 * megabyte,
+            notes: ["Settings shows an update in the version row", "What's new opens from Settings"],
+            releaseNotesURL: URL(string: "https://github.com/niduslabs-dev/drop/releases/tag/v1.0.6"))
+
+        /// The version row's states (UpdatesInRow board), Settings scrolled to the Drop group.
+        static let rowStates = [
+            "idle", "notchecked", "checking", "uptodate", "available", "downloading", "nosize", "preparing", "ready",
+            "later", "laterfail", "installing", "failed", "dlfailed", "verifyfailed", "disabled", "updated",
+        ]
+
+        /// Update surfaces with a sample on the app's model (Sparkle never runs):
+        /// `update-ready` and `update-available` (automatic installs off) are the popup,
+        /// `update-ready-plain` the popup without notes; `settings-update` is Settings with an
+        /// update ready, `settings-update-idle` with nothing pending (a `-bottom` suffix scrolls
+        /// to the Drop group); `row-<state>` is each version row state (`rowStates`), scrolled to
+        /// the Drop group; `row-downloading-roll` counts the percentage up; `notes`,
+        /// `notes-idle` and `notes-empty` open What's new from Ready, Idle and with no notes
+        /// (it prints the sheet's window).
         private static func runUpdate(_ state: String, app: AppDelegate) {
             let model = app.updates
             model.isEnabled = true
@@ -150,29 +172,64 @@
             morning.minute = 12
             model.lastChecked = Calendar.current.date(from: morning)
             model.requestCheck = {}
-            switch state {
+            let row = state.hasPrefix("row-") ? String(state.dropFirst(4)) : nil
+            switch row ?? state {
             case "update-available":
                 model.automatic = false
                 model.demo(.available(sampleUpdate), popup: true)
             case "update-ready-plain":
                 let plain = AvailableUpdate(version: "1.1", size: 4 * megabyte, notes: [], releaseNotesURL: nil)
-                model.demo(.ready(plain), popup: true)
-            case "settings-update", "settings-update-bottom":
-                model.demo(.ready(sampleUpdate), popup: false)
-            case "settings-update-idle", "settings-update-idle-bottom":
+                model.demo(.ready(plain, afterLater: false), popup: true)
+            case "update-ready": model.demo(.ready(sampleUpdate, afterLater: false), popup: true)
+            case "settings-update", "settings-update-bottom", "ready", "notes":
+                model.demo(.ready(rowUpdate, afterLater: false), popup: false)
+            case "notchecked":
+                model.lastChecked = nil
                 model.demo(.idle, popup: false)
-            default:
-                model.demo(.ready(sampleUpdate), popup: true)
+            case "checking": model.demo(.checking, popup: false)
+            case "uptodate":
+                model.lastChecked = .now
+                model.demo(.idle, popup: false)
+            case "available":
+                model.automatic = false
+                model.demo(.available(rowUpdate), popup: false)
+            case "downloading", "downloading-roll": model.demo(.downloading(rowUpdate, fraction: 0.42), popup: false)
+            case "nosize": model.demo(.downloading(rowUpdate, fraction: nil), popup: false)
+            case "preparing": model.demo(.preparing(rowUpdate), popup: false)
+            case "later": model.demo(.ready(rowUpdate, afterLater: true), popup: false)
+            case "laterfail": model.demo(.failed(.restart(rowUpdate)), popup: false)
+            case "installing": model.demo(.installing(rowUpdate), popup: false)
+            case "failed": model.demo(.failed(.check), popup: false)
+            case "dlfailed": model.demo(.failed(.download(rowUpdate)), popup: false)
+            case "verifyfailed": model.demo(.failed(.verify(rowUpdate)), popup: false)
+            case "disabled":
+                model.isEnabled = false
+                model.demo(.idle, popup: false)
+            case "updated":
+                model.justUpdated = true
+                model.demo(.idle, popup: false)
+            case "notes-empty":
+                model.bundledNotes = []
+                model.demo(.idle, popup: false)
+            default: model.demo(.idle, popup: false)
             }
+            let opensNotes = state.hasPrefix("notes")
             Task {
-                if state.hasPrefix("settings") {
+                if state.hasPrefix("settings") || row != nil || opensNotes {
+                    app.settings.demoOpensNotes = opensNotes
                     app.settings.show()
-                    if state.hasSuffix("-bottom") {
+                    if state.hasSuffix("-bottom") || row != nil || opensNotes {
                         try? await Task.sleep(for: settle)
                         app.settings.demoScroll(.bottom)
                     }
                     try? await Task.sleep(for: redraw)
-                    report(app.settings.windowNumber ?? 0)
+                    if opensNotes {
+                        try? await Task.sleep(for: settle)
+                        report(app.settings.sheetWindowNumber ?? 0)
+                    } else {
+                        report(app.settings.windowNumber ?? 0)
+                    }
+                    if row == "downloading-roll" { await rollPercent(model) }
                 } else {
                     app.updatePopup.refresh()
                     try? await Task.sleep(for: settle)
@@ -180,6 +237,18 @@
                 }
             }
         }
+
+        /// Counts the row's percentage up from 42, one step per `rollStep`, so a recording
+        /// shows the roll.
+        private static func rollPercent(_ model: UpdateModel) async {
+            for percent in 43...100 {
+                try? await Task.sleep(for: rollStep)
+                model.demo(.downloading(rowUpdate, fraction: Double(percent) / 100), popup: false)
+            }
+            model.demo(.preparing(rowUpdate), popup: false)
+        }
+
+        private static let rollStep: Duration = .milliseconds(250)
 
         /// Opens a surface's Install to select through `SelectDemo`, never a click.
         private static func runSelect(_ state: String, app: AppDelegate) {

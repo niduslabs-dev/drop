@@ -115,9 +115,10 @@ struct SelfImage: Equatable {
     }
 }
 
-/// Drop's own update check, as Settings' Check for Updates runs it. Injected into
-/// `InstallController` so tests count the calls; debug and test launches have no updater,
-/// so there it only logs.
+/// Drop's own disk image's Check for updates: opens Settings at the version row and runs
+/// the check there, so it counts as a check started from Settings (no popup; the row shows
+/// every step). Injected into `InstallController` so tests count the calls; debug and test
+/// launches have no updater, so there it only logs.
 @MainActor
 struct UpdateCheck {
     var isAvailable: () -> Bool
@@ -133,7 +134,12 @@ struct UpdateCheck {
         return true
     }
 
-    static func live(_ updates: UpdateModel) -> UpdateCheck {
-        UpdateCheck(isAvailable: { updates.isEnabled }, start: { updates.perform(.check) })
+    static func live(_ updates: UpdateModel, showSettings: @escaping () -> Void = {}) -> UpdateCheck {
+        UpdateCheck(
+            isAvailable: { updates.isEnabled },
+            start: {
+                showSettings()
+                updates.perform(.check)
+            })
     }
 }
