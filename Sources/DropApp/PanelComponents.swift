@@ -160,7 +160,7 @@ struct SurfaceBackground: View {
                     VisualEffectBackground(material: Theme.Glass.lightPopupMaterial)
                     Theme.Colour.surface.opacity(Theme.Panel.surfaceOpacity)
                 }
-            // Settings is on the kit's window surface (design/adoption/drop.md), where
+            // Settings is on the kit's window surface (studio/drop/adoption.md), where
             // captions, errors and links clear 4.5:1; the system's grey window didn't.
             case .window, .settings, .sheet: Theme.Colour.surface
             }

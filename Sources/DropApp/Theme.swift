@@ -5,7 +5,7 @@ import SwiftUI
 /// (`.claude/canvas/project`) and the Nidus component kit (`Components.dc.html`). Views read
 /// every number from here; none adds its own.
 enum Theme {
-    /// The studio spacing scale (`docs/mac-app-design.md` 1.1). Every gap and inset is one of
+    /// The studio spacing scale (`studio/design/mac-apps.md` 1.1). Every gap and inset is one of
     /// these; anything off the scale says which optical fix it is where it's declared.
     enum Space {
         static let xxxs: CGFloat = 2
@@ -18,7 +18,7 @@ enum Theme {
         static let xxl: CGFloat = 32
     }
 
-    /// The studio radii (`docs/mac-app-design.md` 1.4): capsules for actions, `control` for
+    /// The studio radii (`studio/design/mac-apps.md` 1.4): capsules for actions, `control` for
     /// value controls, `card` for containers at window scale.
     enum Radius {
         static let control: CGFloat = 8
