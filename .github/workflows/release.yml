@@ -5,8 +5,8 @@
 #
 # Runs on a pushed tag vX.Y.Z (notes: that version's section in RELEASE_NOTES.md, else the
 # tag's message), or by hand with a version (tags the current commit). Never on pull
-# requests. Secrets live in the repo; only the steps that need them reference them, and the
-# `release` environment is where required reviewers go (Settings › Environments › release).
+# requests. The secrets belong to the `release` environment (tags v* only), which is also
+# where required reviewers go (Settings › Environments › release); no other job can read them.
 #
 # Dry run (by hand, dry_run ticked): everything up to the DMG, ad hoc signed and not
 # notarized, then stops. It takes no environment and skips every step that names a secret,
@@ -45,8 +45,8 @@ jobs:
     # Macs, which a public repo must not reach.
     runs-on: xcode-27
     timeout-minutes: 60
-    # No environment for a dry run: it never waits for a reviewer. Its steps that name a
-    # secret are skipped (the secrets are repo-wide here, unlike Pane's).
+    # No environment for a dry run: it can't read the secrets or wait for a reviewer, and its
+    # steps that name a secret are skipped as well.
     environment: ${{ !inputs.dry_run && 'release' || '' }}
     permissions:
       contents: read
