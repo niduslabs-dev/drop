@@ -7,6 +7,7 @@ them short, one change per line.
 ## 1.0.5
 
 - The copied size always shows one decimal, so it rolls without jumping
+- The copied size no longer reads larger than the total early on, such as "840 of 84 MB"
 
 ## 1.0.4
 
