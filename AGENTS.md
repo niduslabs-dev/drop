@@ -1,6 +1,6 @@
 # Drop
 
-A Mac app that installs an app straight out of a `.dmg` without mounting it, and offers to when a new DMG lands in Downloads. GPL-3.0. Plan, decisions and the design canvas link live in the Nidus Labs workspace (`studio/drop/plan.md`), not in this repo. Research, benchmarks and the sample DMGs: `.claude/` (gitignored).
+A Mac app that installs an app straight out of a `.dmg` without mounting it, and offers to when a new DMG lands in Downloads. GPL-3.0. Decisions and the research behind them: `docs/decisions.md`. Design boards: [Drop boards](https://artifacts.niduslabs.dev/drop/boards). What's open is in the workspace's `STATUS.md`. Research, benchmarks and the sample DMGs: `.claude/` (gitignored).
 
 ## Layout
 
