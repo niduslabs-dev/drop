@@ -33,7 +33,8 @@ extension Verifier {
     public static func lookUpTicket(
         for cdhashes: [CDHash], timeout: Duration, session: URLSession = .shared
     ) async -> TicketAnswer {
-        guard !cdhashes.isEmpty else { return .notFound }
+        // Nothing was asked, so this isn't Apple's answer: never report it as `.notFound`.
+        guard !cdhashes.isEmpty else { return .unreachable }
         var request = URLRequest(url: ticketServiceURL, timeoutInterval: timeout.timeInterval)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

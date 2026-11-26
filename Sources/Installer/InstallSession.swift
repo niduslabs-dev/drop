@@ -812,8 +812,10 @@ public actor InstallSession {
     private func applyPeek(_ result: SignerPeek.Result?) async {
         guard let result, result.signing.hasSigner, !stopFlag.isSet, !state.isFinal, verdict == nil else { return }
         timings.signerRead = elapsed()
+        // Without cdhashes there is nothing to ask Apple about, so the full check decides.
+        let canAsk = result.signing.kind == .developerID && !result.signing.cdhashes.isEmpty
         let notarization: Notarization =
-            result.hasStapledTicket ? .stapled : result.signing.kind == .developerID ? .asking(attempt: 0) : .unknown
+            result.hasStapledTicket ? .stapled : canAsk ? .asking(attempt: 0) : .unknown
         earlyTrust = EarlyTrust(signing: result.signing, notarization: notarization)
         if case .asking = notarization { beginLookup() }
         state = state
