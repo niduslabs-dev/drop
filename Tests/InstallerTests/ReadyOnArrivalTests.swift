@@ -327,6 +327,37 @@ struct ReadyOnArrivalSessionTests {
         #expect(scratch.trashed().isEmpty)
     }
 
+    /// Apple's "no ticket" lands before the full check, and only from that answer: a timeout
+    /// stays unreachable. The full check then moves to the warning board as before.
+    @Test(arguments: [TicketAnswer.notFound, .unreachable])
+    func appleNoTicketIsShownBeforeTheFullCheck(answer: TicketAnswer) async throws {
+        let scratch = try Scratch("arrival-no-ticket")
+        defer { scratch.remove() }
+        let gate = Gate(open: false)
+        let lookup = ScriptedLookup()
+        let rejected = AssessmentResult.assessed(
+            Assessment(accepted: false, source: Assessment.Source.developerID, status: nil))
+        let session = InstallSession(
+            dmg: try Fixtures.dmg("one-app"),
+            options: Self.options(
+                scratch, network: FakeNetwork(satisfied: true).path, lookup: lookup,
+                verdict: Self.verdict(Self.developerID(), assessment: rejected), gate: gate))
+        await session.start()
+        try await waitUntil { lookup.calls == 1 }
+        lookup.answer(answer)
+        let expected: Notarization = answer == .notFound ? .notFound : .unreachable
+        let early = await waitFor(session, timeout: .seconds(30)) { $0.summary?.notarization == expected }
+        #expect(early.summary?.isSignatureChecked == false, "before the full check")
+        #expect(early.summary?.isNotarized == false)
+        gate.open()
+        let settled = await waitFor(session) { $0.isSettled }
+        guard case .warning(_, .notNotarized) = settled else {
+            Issue.record("expected warning, got \(settled)")
+            return
+        }
+        await session.cancel()
+    }
+
     @Test func anEarlyInstallThatEndsInAWarningReplacesNothing() async throws {
         let scratch = try Scratch("arrival-warning")
         defer { scratch.remove() }

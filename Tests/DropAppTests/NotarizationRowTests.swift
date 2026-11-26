@@ -109,9 +109,26 @@ final class ManualSleeper: Sendable {
         #expect(rows == [.unreachable, .unreachable, .checkingWithApple, .notarized])
     }
 
-    @Test func appleWithoutATicketWaitsForTheFullCheck() {
-        #expect(NotarizationRow.resolve(summary(.notFound), phase: .beforeCheckingDelay) == .reserved)
-        #expect(NotarizationRow.resolve(summary(.notFound), phase: .afterCheckingDelay) == .checkingSignature)
+    @Test func appleWithoutATicketIsAmberAtOnce() {
+        // Apple's "no ticket" is final: no checking line, whatever the clock says.
+        let rows = timeline([
+            (.asking(attempt: 1), .beforeCheckingDelay), (.notFound, .beforeCheckingDelay),
+            (.notFound, .afterCheckingDelay), (.notFound, .afterGiveUp),
+        ])
+        #expect(rows == [.reserved, .notNotarized, .notNotarized, .notNotarized])
+        #expect(!rows.contains(.checkingSignature))
+        #expect(!rows.contains(.checkingWithApple))
+    }
+
+    @Test func aTimedOutLookupKeepsTheOfflineLine() {
+        // A timeout is no answer: the grey line, never "Not notarized".
+        let rows = timeline([(.asking(attempt: 1), .afterCheckingDelay), (.unreachable, .afterCheckingDelay)])
+        #expect(rows == [.checkingWithApple, .unreachable])
+    }
+
+    @Test func aSignerThatCantBeNotarizedWaitsForTheFullCheck() {
+        #expect(NotarizationRow.resolve(summary(.unknown), phase: .beforeCheckingDelay) == .reserved)
+        #expect(NotarizationRow.resolve(summary(.unknown), phase: .afterCheckingDelay) == .checkingSignature)
     }
 
     @Test func theClockStepsThroughTheDelayAndTheGiveUp() async {

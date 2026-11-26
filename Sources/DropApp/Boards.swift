@@ -171,7 +171,8 @@ struct MainBoard: View {
 /// "Signed by …" and the notarized row (Ready on arrival boards). The signer shows as soon
 /// as the fast read names it, about 150 ms in; the notarized row follows `NotarizationRow`:
 /// a ticket or Apple's answer swaps "Notarized by Apple" in, a slow answer shows "Checking
-/// with Apple…" first, and no answer the grey "Couldn't reach Apple" line. Until any signer
+/// with Apple…" first, Apple's "no ticket" the amber "Not notarized by Apple", and no answer
+/// the grey "Couldn't reach Apple" line. Until any signer
 /// is known the card waits with "Checking the signature…", keeping the height of the usual
 /// result so the panel doesn't grow when it lands.
 struct SignerCard: View {
@@ -179,6 +180,8 @@ struct SignerCard: View {
 
     /// The popup shows the whole line, so its icon is a status glyph, not a button.
     static let unreachableText = "Couldn't reach Apple. macOS checks on first open."
+    /// Only from Apple's answer that it has no ticket, never from a failed lookup.
+    static let notNotarizedText = "Not notarized by Apple"
 
     var body: some View {
         InfoCard {
@@ -226,6 +229,10 @@ struct SignerCard: View {
                     WaitingRow(text: "Checking with Apple\u{2026}")
                 case .checkingSignature:
                     WaitingRow(text: "Checking the signature\u{2026}")
+                case .notNotarized:
+                    CardRow(
+                        symbol: "exclamationmark.shield", colour: Theme.Colour.warning,
+                        text: Text(Self.notNotarizedText))
                 case .unreachable:
                     CardRow(
                         symbol: "info.circle",
@@ -252,6 +259,7 @@ struct SignerCard: View {
             switch row {
             case .notarized: "Notarized by Apple"
             case .unreachable: unreachableText
+            case .notNotarized: notNotarizedText
             default: nil
             }
         if let text { AccessibilityNotification.Announcement(text).post() }

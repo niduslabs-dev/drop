@@ -9,8 +9,11 @@ import Observation
 ///   the WaitingRow "Checking with Apple…", then from `notarizationGiveUp` the grey line,
 ///   until Apple answers (a late "notarized" still swaps the line out).
 /// - No network path, or no answer: the grey line at once.
-/// - Apple has no ticket, or the signer can't be notarized: "Checking the signature…" after
-///   the delay, until the full check lands on the warning or ready board.
+/// - Apple answered that it has no ticket: the amber "Not notarized by Apple" at once. That
+///   answer is final (decided 2026-11-26); Install stays enabled, and the full check still
+///   moves the surface to the warning board. Never from a network failure or timeout.
+/// - The signer can't be notarized: "Checking the signature…" after the delay, until the
+///   full check lands on the warning or ready board.
 enum NotarizationRow: Equatable {
     /// Nothing shown; the row's height is kept.
     case reserved
@@ -18,6 +21,8 @@ enum NotarizationRow: Equatable {
     case notarized
     /// "Couldn't reach Apple. macOS checks on first open."
     case unreachable
+    /// Apple answered with no ticket: "Not notarized by Apple" in the warning colour.
+    case notNotarized
     /// The full check decides; it is still running.
     case checkingSignature
 
@@ -39,7 +44,8 @@ enum NotarizationRow: Equatable {
             // delay, rather than blanking it.
             case .beforeCheckingDelay: return attempt > 1 ? .unreachable : .reserved
             }
-        case .notFound, .unknown:
+        case .notFound: return .notNotarized
+        case .unknown:
             return phase >= .afterCheckingDelay ? .checkingSignature : .reserved
         }
     }

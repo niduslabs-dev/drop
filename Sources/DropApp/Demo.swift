@@ -24,7 +24,8 @@
     /// `-key` (Down pressed once); it also prints `DEMO_MENU <id>` and both frames for
     /// measuring. Ready on arrival (each also as `window-…`): `arriving` (the fast read's
     /// signer and a stapled ticket while staging), `checking-apple` (no answer after the
-    /// delay), `apple-offline` (the grey line), `early-install` (Install pressed during the
+    /// delay), `apple-offline` (the grey line), `apple-no-ticket` (Apple's "no ticket": the amber row
+    /// while staging), `early-install` (Install pressed during the
     /// check), `arriving-update` (Same developer from the fast read), and `late-warning` and
     /// `late-refused`, which show `arriving` or `early-install`, then blur-swap to the warning
     /// or damaged board when the full check disagrees (`DEMO_STEP late`), and report after. `open-after` (the popup) and
@@ -54,8 +55,10 @@
                 "window-refused", "window-update", "onboarding-1",
                 "onboarding-2", "onboarding-2-denied", "onboarding-3",
                 "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
-                "arriving", "checking-apple", "apple-offline", "early-install", "arriving-update", "late-warning",
+                "arriving", "checking-apple", "apple-offline", "apple-no-ticket", "early-install", "arriving-update",
+                "late-warning",
                 "late-refused", "window-arriving", "window-checking-apple", "window-apple-offline",
+                "window-apple-no-ticket",
                 "window-early-install", "window-arriving-update", "window-late-warning", "window-late-refused",
                 "update-ready",
                 "update-available", "update-ready-plain", "settings-update", "settings-update-idle",
@@ -575,15 +578,16 @@
                 model.state = .preparing(early, InstallProgress(bytesDone: 30 * megabyte, bytesTotal: 84 * megabyte))
             case "waiting":
                 model.state = .waitingToPrepare(linea)
-            case "arriving", "checking-apple", "apple-offline", "early-install", "arriving-update":
+            case "arriving", "checking-apple", "apple-offline", "apple-no-ticket", "early-install", "arriving-update":
                 // The fast read's answer while staging runs: signed, and notarization from a
-                // stapled ticket, still asking Apple, or Apple unreachable.
+                // stapled ticket, still asking Apple, Apple unreachable, or Apple's "no ticket".
                 var early = linea
                 early.isNotarized = state == "arriving" || state == "early-install" || state == "arriving-update"
                 early.notarization =
                     switch state {
                     case "checking-apple": .asking(attempt: 1)
                     case "apple-offline": .unreachable
+                    case "apple-no-ticket": .notFound
                     default: .stapled
                     }
                 if state == "arriving-update" {

@@ -317,6 +317,8 @@ private struct InstallDetailsCard: View {
                     switch model.notarizationRow {
                     case .notarized: checked("Notarized")
                     case .checkingWithApple, .checkingSignature: waiting("Checking\u{2026}")
+                    // The amber text token: `warning` itself is 4.4:1 on the light card.
+                    case .notNotarized: Text("Not notarized").foregroundStyle(Theme.Colour.warnText)
                     case .unreachable:
                         HStack(spacing: Theme.InstallWindow.detailIconGap) {
                             Text("Couldn't reach Apple").foregroundStyle(Theme.Colour.secondaryText)
