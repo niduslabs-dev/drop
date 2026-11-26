@@ -594,3 +594,40 @@ extension View {
     /// The label of a row whose control is a kit control (see `DimsWhenDisabled`).
     func dimsWhenDisabled() -> some View { modifier(DimsWhenDisabled()) }
 }
+
+/// The kit's ⓘ button, named More info: Space or Return opens its popover with `text`,
+/// Esc or a click away closes it and focus stays on the button. Settings' skip-prompt
+/// row and the install window's "Couldn't reach Apple" row use this one piece, so both
+/// look and behave the same.
+///
+/// `popoverWidth` wraps a long text at that width; without it the popover fits a short
+/// text on one line.
+struct MoreInfoButton: View {
+    let text: String
+    var popoverWidth: CGFloat?
+    @State private var isShown = false
+
+    var body: some View {
+        Button {
+            isShown.toggle()
+        } label: {
+            Image(systemName: "info.circle").font(Theme.Font.chevron)
+                .foregroundStyle(Theme.Colour.secondaryText)
+        }
+        .buttonStyle(.nidusPlain)
+        .accessibilityLabel("More info")
+        .accessibilityHint(text)
+        .popover(isPresented: $isShown, arrowEdge: .bottom) {
+            Group {
+                if let popoverWidth {
+                    Text(text).frame(width: popoverWidth, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(text).fixedSize()
+                }
+            }
+            .font(Theme.Font.small)
+            .padding(Theme.Space.l)
+        }
+    }
+}

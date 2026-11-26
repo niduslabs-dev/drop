@@ -50,7 +50,8 @@ public struct InstallOptions: Sendable {
     public var network: NetworkPath
     /// How long a notarization lookup may take before it counts as no answer. The panel
     /// shows "Couldn't reach Apple" sooner (its own give-up); a later answer still counts
-    /// until this.
+    /// until this. No default: the app passes `Theme.Timing.notarizationLateAnswer`, the
+    /// one copy of the value.
     public var notarizationLookupTimeout: Duration
     /// Asks Apple's ticket service by cdhash. Tests replace it with a scripted answer.
     var lookUpTicket: @Sendable (_ cdhashes: [CDHash], _ timeout: Duration) async -> TicketAnswer = {
@@ -91,7 +92,7 @@ public struct InstallOptions: Sendable {
         conditions: StagingConditions = .system, uncachedBackgroundWrites: Bool = false,
         backgroundWriteRate: Int? = Extractor.defaultBackgroundWriteRate, reissuesVerificationOnBoost: Bool = true,
         fullSpeedWhenUnconstrained: Bool = false, network: NetworkPath = .system,
-        notarizationLookupTimeout: Duration = defaultNotarizationLookupTimeout
+        notarizationLookupTimeout: Duration
     ) {
         self.fullSpeedWhenUnconstrained = fullSpeedWhenUnconstrained
         self.network = network
@@ -107,12 +108,6 @@ public struct InstallOptions: Sendable {
         self.backgroundWriteRate = backgroundWriteRate
         self.reissuesVerificationOnBoost = reissuesVerificationOnBoost
     }
-}
-
-extension InstallOptions {
-    /// `notarizationLookupTimeout`'s default: the app passes its own
-    /// (`Theme.Timing.notarizationLateAnswer`).
-    public static let defaultNotarizationLookupTimeout: Duration = .seconds(15)
 }
 
 /// One DMG on its way into the destination: reads it, asks for the licence when there is
@@ -782,11 +777,14 @@ public actor InstallSession {
 
     /// The notarization row once the full check has run: Gatekeeper's acceptance confirms
     /// it; a ticket the fast read found still counts when Gatekeeper couldn't be asked.
+    /// When the full check refuses or warns, the fast read's value stands as it was:
+    /// `.notFound` only ever means Apple answered that it has no ticket, so a lookup that is
+    /// still asking, or never got an answer, is never turned into it here.
     static func notarization(after verdict: Verdict, decision: Verdict.Decision, early: Notarization?)
         -> Notarization
     {
         if verdict.assessment?.assessment?.isCheckedByApple == true { return early == .stapled ? .stapled : .confirmed }
-        guard decision == .install else { return early == .unknown || early == nil ? .unknown : .notFound }
+        guard decision == .install else { return early ?? .unknown }
         if let early, early.isNotarized { return early }
         return .unreachable
     }

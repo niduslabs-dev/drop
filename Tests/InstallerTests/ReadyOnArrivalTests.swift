@@ -421,6 +421,16 @@ struct ReadyOnArrivalSessionTests {
             InstallSession.notarization(after: unknown, decision: .install, early: .asking(attempt: 1)) == .unreachable)
         let early = EarlyTrust(signing: signing, notarization: .notFound)
         #expect(InstallSession.decision(for: unknown, early: early) == .warn(.notarizationUnknown))
+        // A full check that warns keeps the fast read's value: only Apple's own answer
+        // is ever `.notFound` ("Not notarized by Apple").
+        let warns = Verdict.Decision.warn(.notarizationUnknown)
+        #expect(InstallSession.notarization(after: unknown, decision: warns, early: .notFound) == .notFound)
+        #expect(
+            InstallSession.notarization(after: unknown, decision: warns, early: .asking(attempt: 1))
+                == .asking(attempt: 1))
+        #expect(InstallSession.notarization(after: unknown, decision: warns, early: .unreachable) == .unreachable)
+        #expect(InstallSession.notarization(after: unknown, decision: warns, early: .stapled) == .stapled)
+        #expect(InstallSession.notarization(after: unknown, decision: warns, early: nil) == .unknown)
         let other = EarlyTrust(signing: Self.developerID(team: "ZZZZZ99999"), notarization: .stapled)
         guard case .refuse(.damaged) = InstallSession.decision(for: accepted, early: other) else {
             Issue.record("a different signer must be refused")

@@ -17,7 +17,6 @@ struct SettingsView: View {
 
     @Environment(\.titleBarHeight) private var titleBarHeight
     @Environment(\.settingsSizing) private var sizing
-    @State private var showsSkipInfo = false
     @State private var scrollPosition = ScrollPosition(edge: .top)
     @State private var showsNotes = false
     @State private var whatsNewFocus = FocusLink()
@@ -143,23 +142,10 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: Theme.Row.captionGap) {
                 HStack(spacing: Theme.Row.titleInfoGap) {
                     Text("Skip the \u{201C}downloaded from the Internet\u{201D} prompt").font(Theme.Font.body)
-                    Button {
-                        showsSkipInfo.toggle()
-                    } label: {
-                        Image(systemName: "info.circle").font(Theme.Font.chevron)
-                            .foregroundStyle(Theme.Colour.secondaryText)
-                    }
-                    .buttonStyle(.nidusPlain)
-                    .accessibilityLabel("More info")
-                    .popover(isPresented: $showsSkipInfo, arrowEdge: .bottom) {
-                        Text(
-                            "Drop marks the app approved, as clicking Open does. Only for notarized apps that pass Drop's check, never for Install Anyway. macOS still checks the signature at first launch."
-                        )
-                        .font(Theme.Font.small)
-                        .frame(width: Theme.Settings.infoWidth, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(Theme.Space.l)
-                    }
+                    MoreInfoButton(
+                        text:
+                            "Drop marks the app approved, as clicking Open does. Only for notarized apps that pass Drop's check, never for Install Anyway. macOS still checks the signature at first launch.",
+                        popoverWidth: Theme.Settings.infoWidth)
                 }
                 Text("Only for apps notarized by Apple.").font(Theme.Font.caption)
                     .foregroundStyle(Theme.Colour.secondaryText).lineLimit(1)

@@ -75,23 +75,12 @@ struct InstallWindowView: View {
             .font(Theme.Font.body)
             .foregroundStyle(Theme.Colour.secondaryText)
             .padding(.top, Theme.InstallWindow.titleToMeta)
-            details.transition(.opacity)
-                .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: detailsKey)
+            // A late warning or damaged answer blur-swaps the card like any changing
+            // content (the kit's blurSwap); Reduce Motion cross-fades.
+            StatusSwap(key: detailsKey) { details }
                 .padding(.top, Theme.InstallWindow.metaToDetails)
             actionsSlot
                 .padding(.top, Theme.InstallWindow.optionsToActions)
-        }
-        // The "Couldn't reach Apple" info button is drawn here, after the actions, so it
-        // comes last in the Tab order (Install, Not now, Open disk image, More info) while
-        // sitting in the details card's row.
-        .overlayPreferenceValue(MoreInfoAnchor.self) { anchor in
-            GeometryReader { proxy in
-                if let anchor {
-                    let frame = proxy[anchor]
-                    MoreInfoButton(text: InstallDetailsCard.unreachableHelp)
-                        .position(x: frame.midX, y: frame.midY)
-                }
-            }
         }
     }
 
@@ -298,44 +287,52 @@ private struct InstallDetailsCard: View {
 
     /// The rest of the popup's line, behind the window's info button (longer text behind ⓘ).
     static let unreachableHelp = "macOS checks on first open."
+    /// Below every other element's default of 0, so More info comes after the actions.
+    static let lastInOrder: Double = -1
 
     var body: some View {
         InfoCard(spacing: 0) {
             row("Made by", key: model.isChecking) {
                 if model.isChecking {
-                    waiting("Checking\u{2026}")
+                    waiting("Checking\u{2026}", row: "Made by")
                 } else if let signer = model.summary?.signer {
-                    checked(signer)
+                    checked(signer, row: "Made by")
                 } else {
-                    Text("Not signed").foregroundStyle(Theme.Colour.secondaryText)
+                    Text("Not signed").foregroundStyle(Theme.Colour.secondaryText).spoken("Made by", "Not signed")
                 }
             }
             row("Checked by Apple", key: notarizedKey) {
                 if model.isChecking {
-                    waiting("Checking\u{2026}")
+                    waiting("Checking\u{2026}", row: "Checked by Apple")
                 } else {
                     switch model.notarizationRow {
-                    case .notarized: checked("Notarized")
-                    case .checkingWithApple, .checkingSignature: waiting("Checking\u{2026}")
+                    case .notarized: checked("Notarized", row: "Checked by Apple")
+                    case .checkingWithApple, .checkingSignature: waiting("Checking\u{2026}", row: "Checked by Apple")
                     // The amber text token: `warning` itself is 4.4:1 on the light card.
-                    case .notNotarized: Text("Not notarized").foregroundStyle(Theme.Colour.warnText)
+                    case .notNotarized:
+                        Text("Not notarized").foregroundStyle(Theme.Colour.warnText)
+                            .spoken("Checked by Apple", "Not notarized")
                     case .unreachable:
+                        // The ⓘ swaps in and out with the line. It comes last in the
+                        // accessibility and Tab order (Install, Not now, Open disk image,
+                        // More info): the text before it is what the row says, the button
+                        // only adds to it.
                         HStack(spacing: Theme.InstallWindow.detailIconGap) {
                             Text("Couldn't reach Apple").foregroundStyle(Theme.Colour.secondaryText)
-                            // The button itself is drawn after the actions (`MoreInfoAnchor`).
-                            Color.clear
-                                .frame(width: Theme.InstallWindow.detailIcon, height: Theme.InstallWindow.detailIcon)
-                                .anchorPreference(key: MoreInfoAnchor.self, value: .bounds) { $0 }
+                                .spoken("Checked by Apple", "Couldn't reach Apple")
+                            MoreInfoButton(text: Self.unreachableHelp)
+                                .accessibilitySortPriority(Self.lastInOrder)
                         }
                     case .reserved: Color.clear.frame(height: 0)
                     case nil:
-                        Text(model.summary?.isNotarized == true ? "Notarized" : "Not notarized")
-                            .foregroundStyle(Theme.Colour.secondaryText)
+                        let text = model.summary?.isNotarized == true ? "Notarized" : "Not notarized"
+                        Text(text).foregroundStyle(Theme.Colour.secondaryText).spoken("Checked by Apple", text)
                     }
                 }
             }
             row("From", key: 0) {
                 Text(model.dmg.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                    .spoken("From", model.dmg.lastPathComponent)
             }
         }
         .onChange(of: model.notarizationRow) { _, row in SignerCard.announce(row) }
@@ -346,64 +343,43 @@ private struct InstallDetailsCard: View {
     private func row<Value: View, Key: Hashable>(_ label: String, key: Key, @ViewBuilder value: () -> Value)
         -> some View
     {
+        // The label is spoken with each value (`spoken`), so a row reads as one line and
+        // a button in the value (More info) stays its own element.
         HStack(spacing: Theme.Row.labelControlGap) {
-            Text(label).foregroundStyle(Theme.Colour.secondaryText)
+            Text(label).foregroundStyle(Theme.Colour.secondaryText).accessibilityHidden(true)
             Spacer(minLength: 0)
             StatusSwap(key: key) { value() }
         }
         .font(Theme.Font.body)
         .frame(height: Theme.InstallWindow.detailRow)
-        .accessibilityElement(children: .combine)
     }
 
-    private func checked(_ text: String) -> some View {
+    private func checked(_ text: String, row: String) -> some View {
         HStack(spacing: Theme.InstallWindow.detailIconGap) {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: Theme.InstallWindow.detailIcon, weight: .semibold))
                 .foregroundStyle(Theme.Colour.good)
             Text(text).foregroundStyle(Theme.Colour.bodyText).lineLimit(1).truncationMode(.middle)
         }
+        .spoken(row, text)
     }
 
-    private func waiting(_ text: String) -> some View {
+    /// The spinner is decorative: the row reads "Checked by Apple, Checking…".
+    private func waiting(_ text: String, row: String) -> some View {
         HStack(spacing: Theme.InstallWindow.detailIconGap) {
             ProgressView().controlSize(.mini)
             Text(text).foregroundStyle(Theme.Colour.secondaryText)
         }
+        .spoken(row, text)
     }
 }
 
-/// Where the window's "Couldn't reach Apple" info button goes: the slot its row leaves.
-private struct MoreInfoAnchor: PreferenceKey {
-    static let defaultValue: Anchor<CGRect>? = nil
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        value = value ?? nextValue()
-    }
-}
-
-/// The ⓘ button named More info: Space or Return opens its popover, Esc or a click away
-/// closes it and focus stays on the button. The same piece as Settings' skip-prompt ⓘ.
-private struct MoreInfoButton: View {
-    let text: String
-    @State private var isShown = false
-
-    var body: some View {
-        Button {
-            isShown.toggle()
-        } label: {
-            Image(systemName: "info.circle")
-                .font(.system(size: Theme.InstallWindow.detailIcon, weight: .semibold))
-                .foregroundStyle(Theme.Colour.secondaryText)
-        }
-        .buttonStyle(.nidusPlain)
-        .accessibilityLabel("More info")
-        .accessibilityHint(text)
-        .popover(isPresented: $isShown, arrowEdge: .bottom) {
-            Text(text)
-                .font(Theme.Font.small)
-                .fixedSize()
-                .padding(Theme.Space.l)
-        }
+extension View {
+    /// One static text for VoiceOver, "label, value": a details row's value with its label.
+    fileprivate func spoken(_ label: String, _ value: String) -> some View {
+        accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(label), \(value)")
+            .accessibilityAddTraits(.isStaticText)
     }
 }
 

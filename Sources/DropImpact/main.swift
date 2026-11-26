@@ -32,6 +32,9 @@ let diskBlockSize = 1 << 20
 /// Bytes the disk reader counts per sample.
 let diskSampleBytes = 64 << 20
 let bytesPerMB = 1_000_000.0
+/// The app's notarization lookup timeout (`Theme.Timing.notarizationLateAnswer`), so the
+/// benchmark's sessions ask Apple as the app's do. The benchmark can't import the app's theme.
+let notarizationLookupTimeout: Duration = .seconds(15)  // design-ok: the app's timeout
 let nanosecondsPerSecond = 1e9
 
 /// The runner creates this file (path in `DROP_IMPACT_STOP`) to end a foreground load early.
@@ -332,7 +335,8 @@ func runStage(policyName: String, destination: URL, boostAfter: Double?, tuning:
         trash: { url in
             try FileManager.default.moveItem(at: url, to: trashed.appending(path: UUID().uuidString))
         }, conditions: .unconstrained, uncachedBackgroundWrites: tuning.uncached,
-        backgroundWriteRate: tuning.rateMBps.map { Int($0 * bytesPerMB) }, reissuesVerificationOnBoost: tuning.reissue)
+        backgroundWriteRate: tuning.rateMBps.map { Int($0 * bytesPerMB) }, reissuesVerificationOnBoost: tuning.reissue,
+        notarizationLookupTimeout: notarizationLookupTimeout)
     let sampler = FootprintSampler()
     let idleFootprint = physFootprint()
     sampler.start()

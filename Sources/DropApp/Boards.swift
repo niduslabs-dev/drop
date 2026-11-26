@@ -46,7 +46,9 @@ struct PanelView: View {
                 }
             }
             .id(kind)
-            .transition(.opacity)
+            // A board change (a late warning or damaged answer among them) blur-swaps,
+            // the kit's blurSwap; Reduce Motion cross-fades.
+            .transition(.statusSwap(reduceMotion: reduceMotion))
         }
         .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: kind)
         .disabled(model.isBusy)

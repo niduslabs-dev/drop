@@ -76,7 +76,8 @@ struct Scratch {
         if let mountFallback { hook = { _, reason in mountFallback.record(reason) } }
         var options = InstallOptions(
             destination: destination, backgroundDecodePolicy: policy.policy, skipFirstLaunchPrompt: skipPrompt,
-            trash: trashItem, mountFallback: hook, conditions: .unconstrained)
+            trash: trashItem, mountFallback: hook, conditions: .unconstrained,
+            notarizationLookupTimeout: .seconds(15))
         options.mountRoot = mountRoot
         // Tests never reach Apple's ticket service: offline unless a test scripts it.
         options.network = .alwaysSatisfied
