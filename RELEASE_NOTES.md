@@ -5,6 +5,13 @@ GitHub release and the update feed. The first three show in Drop's update popup,
 line shows in What's new in Settings, which bundles this file. Keep them short, one change per
 line, with no full stop at the end.
 
+## 1.0.7
+
+- Both checks show the moment a download arrives, so Install is ready at once
+- Installs finish in about two seconds, even right after the download
+- Install to and the Trash switch now live in Settings only
+- Says when Apple can't be reached, or when an app isn't notarized
+
 ## 1.0.6
 
 - Settings shows an update in the version row, step by step
