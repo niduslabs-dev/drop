@@ -10,6 +10,9 @@ struct BundleInfo: Sendable, Equatable {
     var buildVersion: String?
     var identifier: String?
     var iconFile: String?
+    /// `CFBundleExecutable`: the main executable's name in `Contents/MacOS`, where the app's
+    /// code signature is embedded.
+    var executable: String?
 
     /// Real `Info.plist` files are a few KB; Xcode-built ones with many URL types reach
     /// tens of KB. The cap keeps a hostile image from making Drop parse megabytes.
@@ -30,6 +33,7 @@ struct BundleInfo: Sendable, Equatable {
         buildVersion = string("CFBundleVersion")
         identifier = string("CFBundleIdentifier")
         iconFile = string("CFBundleIconFile")
+        executable = string("CFBundleExecutable")
     }
 
     /// Reads `<app>/Contents/Info.plist` through the image's filesystem. Nil when it is

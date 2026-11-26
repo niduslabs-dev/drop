@@ -148,8 +148,16 @@ public struct AppSummary: Sendable, Equatable {
     /// The signing certificate's organisation (or its common name when it has none).
     public var signer: String?
     public var teamID: String?
-    /// Gatekeeper accepts it as checked by Apple (notarized, Apple's own, or App Store).
+    /// Gatekeeper accepts it as checked by Apple (notarized, Apple's own, or App Store), or
+    /// a ticket shows Apple notarized it (`notarization`). Never set from anything else.
     public var isNotarized: Bool
+    /// What is known about notarization so far, from the fast signer read and Apple's ticket
+    /// service before staging, then from the full check.
+    public var notarization: Notarization
+    /// True once the full check on the staged copy has run: `signer`, `teamID` and
+    /// `isNotarized` come from it from then on. Before that they come from the fast signer
+    /// read (`SignerPeek`), which reads the signature without checking the files.
+    public var isSignatureChecked: Bool
     /// Set when an app of the same name is already in the destination.
     public var update: Update?
 
@@ -168,8 +176,11 @@ public struct AppSummary: Sendable, Equatable {
     public init(
         bundleName: String, name: String, version: String?, bundleIdentifier: String?, size: UInt64?,
         iconData: Data? = nil, signer: String? = nil, teamID: String? = nil, isNotarized: Bool = false,
-        update: Update? = nil, buildVersion: String? = nil
+        update: Update? = nil, buildVersion: String? = nil, notarization: Notarization = .unknown,
+        isSignatureChecked: Bool = false
     ) {
+        self.notarization = notarization
+        self.isSignatureChecked = isSignatureChecked
         self.buildVersion = buildVersion
         self.bundleName = bundleName
         self.name = name
@@ -182,6 +193,32 @@ public struct AppSummary: Sendable, Equatable {
         self.isNotarized = isNotarized
         self.update = update
     }
+}
+
+/// Notarization as the panel's second card row tells it. Only `stapled` and `confirmed`
+/// mean notarized: a ticket that lists the app's cdhash, or Apple's own answer.
+public enum Notarization: Sendable, Equatable {
+    /// Nothing read yet, or the signer can't be notarized (ad hoc, unsigned, not Developer
+    /// ID): the full check decides.
+    case unknown
+    /// No stapled ticket: asking Apple's ticket service. `attempt` goes up each time the
+    /// lookup starts again (when the network comes back), so the panel restarts its timing.
+    case asking(attempt: Int)
+    /// A ticket stapled to the app or the disk image lists the app's cdhash.
+    case stapled
+    /// Apple's ticket service returned a ticket for it, or Gatekeeper accepted it as checked
+    /// by Apple in the full check.
+    case confirmed
+    /// Apple answered with no ticket. The full check decides (usually the warning).
+    case notFound
+    /// Apple couldn't be reached: no network path, no answer in time, or the full check's
+    /// assessment couldn't ask. macOS checks on first open.
+    case unreachable
+
+    /// True for the two states that mean Apple notarized this code.
+    public var isNotarized: Bool { self == .stapled || self == .confirmed }
+
+    public var isAsking: Bool { if case .asking = self { true } else { false } }
 }
 
 public enum CannotInstallReason: Sendable, Equatable {
@@ -225,6 +262,8 @@ public struct InstallTimings: Sendable, Equatable {
     public var opened: Double?
     /// When `identified` was published: name, version and icon read.
     public var identified: Double?
+    /// When the fast signer read (`SignerPeek`) was published.
+    public var signerRead: Double?
     public var stagingStarted: Double?
     public var staged: Double?
     public var verified: Double?
@@ -239,9 +278,15 @@ extension InstallState {
     /// The same state with the summary's installed copy replaced; states without a summary
     /// are returned as they are.
     func replacingUpdate(_ update: AppSummary.Update?) -> InstallState {
+        replacingSummary { $0.update = update }
+    }
+
+    /// The same state with `change` applied to its summary; states without one are
+    /// returned as they are.
+    func replacingSummary(_ change: (inout AppSummary) -> Void) -> InstallState {
         func with(_ summary: AppSummary) -> AppSummary {
             var summary = summary
-            summary.update = update
+            change(&summary)
             return summary
         }
         switch self {

@@ -3,13 +3,14 @@ import Installer
 import os
 
 /// The panel's first-time milestones for one DMG, as info logs and signpost events with the
-/// milliseconds since the popup was shown: popup, summary (name and version), icon, size and
-/// verified. `.claude/research/summary-latency.md` reads them with
+/// milliseconds since the popup was shown: popup, summary (name and version), icon, size,
+/// signer (the fast read's "Signed by"), notarized ("Notarized by Apple" on screen), staged
+/// (every byte copied) and verified (the full check's board). `.claude/research/summary-latency.md` reads them with
 /// `log show --predicate 'category == "latency"'`.
 @MainActor
 final class LatencyMarks {
     enum Milestone: String, CaseIterable {
-        case summary, icon, size, verified
+        case summary, icon, size, signer, notarized, staged, verified
     }
 
     private static let log = Logger(subsystem: "dev.niduslabs.drop", category: "latency")
@@ -31,8 +32,13 @@ final class LatencyMarks {
         if model.summary != nil { mark(.summary) }
         if model.appIcon != nil { mark(.icon) }
         if model.summary?.size != nil { mark(.size) }
+        if model.summary?.signer != nil { mark(.signer) }
+        if model.notarizationRow == .notarized { mark(.notarized) }
+        if let progress = model.progress, progress.bytesTotal > 0, progress.fraction >= 1 { mark(.staged) }
         switch model.state {
-        case .ready, .warning, .refused: mark(.verified)
+        case .ready, .warning, .refused:
+            mark(.staged)
+            mark(.verified)
         default: break
         }
     }

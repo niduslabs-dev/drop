@@ -25,7 +25,6 @@ enum PanelAction: Sendable, Equatable {
     case submitPassword
     /// Drop's own newer disk image: close and run Drop's update check (`UpdateCheck`).
     case checkForUpdates
-    case changeLocation(InstallLocation)
 }
 
 /// Which approved board the panel is showing.
@@ -73,6 +72,7 @@ final class PanelModel: Identifiable {
             if let summary = state.summary { self.summary = summary }
             if case .needsLicence(_, let preview?) = state { self.preview = preview }
             if appIcon == nil, let data = summary?.iconData ?? preview?.iconData { appIcon = NSImage(data: data) }
+            followNotarization()
             if case .installed = state, installDuration == nil, let installStartedAt {
                 installDuration = ContinuousClock.now - installStartedAt
             }
@@ -113,11 +113,18 @@ final class PanelModel: Identifiable {
     }
     /// The latest summary seen, kept across states that carry none (installed, failed).
     private(set) var summary: AppSummary?
-    var location: InstallLocation
+    /// Where the app goes and whether the image is trashed after: Settings' values, read when
+    /// the panel opens. Neither surface offers them any more (Ready on arrival boards,
+    /// 2026-11-26); they live in Settings only.
+    let location: InstallLocation
     /// Where the destination is shown as, such as "Applications". Set from `--destination`
     /// in tests so the copy matches what really happens.
     var destinationName: String
-    var trashImage: Bool
+    let trashImage: Bool
+    /// The notarized row's clock (`NotarizationRow`), restarted for each lookup.
+    let notarizationClock: NotarizationRowClock
+    /// Which lookup the clock is timing: the `asking` attempt, or 0 for the full check.
+    @ObservationIgnored private var clockedLookup: Int?
     /// Where the disk image went after install, for Undo.
     var trashedImage: URL?
     var installedApp: URL?
@@ -149,7 +156,11 @@ final class PanelModel: Identifiable {
 
     @ObservationIgnored var send: (PanelAction) -> Void = { _ in }
 
-    init(dmg: URL, origin: Origin, location: InstallLocation, trashImage: Bool) {
+    init(
+        dmg: URL, origin: Origin, location: InstallLocation, trashImage: Bool,
+        notarizationClock: NotarizationRowClock = NotarizationRowClock()
+    ) {
+        self.notarizationClock = notarizationClock
         self.dmg = dmg
         self.origin = origin
         self.location = location
@@ -178,12 +189,29 @@ final class PanelModel: Identifiable {
     /// read by mounting (locked, mount-only) whose licence and password come first.
     var appName: String { summary?.name ?? preview?.name ?? ImageName.appName(fromImage: dmg) }
 
-    /// True while staging and the check still run: the signer line isn't known yet.
+    /// True while the signer isn't known yet: neither the fast read nor the full check has
+    /// named one.
     var isChecking: Bool {
         switch state {
-        case .reading, .identified, .preparing, .waitingToPrepare: true
+        case .reading, .identified, .preparing, .waitingToPrepare: summary?.signer == nil
         default: false
         }
+    }
+
+    /// The signer card's second row, once a signer is shown; nil before.
+    var notarizationRow: NotarizationRow? {
+        guard let summary, summary.signer != nil else { return nil }
+        return NotarizationRow.resolve(summary, phase: notarizationClock.phase)
+    }
+
+    /// Starts the row's clock when the signer first shows, and again for each new lookup
+    /// (the network came back), so every lookup gets the same delay and give-up.
+    private func followNotarization() {
+        guard let summary = state.summary, summary.signer != nil else { return }
+        let lookup: Int = if case .asking(let attempt) = summary.notarization { attempt } else { clockedLookup ?? 0 }
+        guard lookup != clockedLookup else { return }
+        clockedLookup = lookup
+        notarizationClock.restart()
     }
 
     var progress: InstallProgress? {

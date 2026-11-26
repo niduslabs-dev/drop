@@ -40,6 +40,29 @@ public struct InstallOptions: Sendable {
     /// and start again at user-initiated rather than wait for it. A running check's thread
     /// can't be raised from outside, and Code Signing's hashing inherits its QoS.
     public var reissuesVerificationOnBoost: Bool
+    /// Stage at full speed (user-initiated QoS, the fast decode policy, no write pacing) while
+    /// the panel waits, except in Low Power Mode or at a serious thermal state, which still
+    /// wait in `waitingToPrepare` (`conditions`). The app sets it for the popup, so the full
+    /// check usually ends before the user reaches Install (decided 2026-11-26). Off by
+    /// default, so the impact benchmark and the gentle-staging tests keep the background path.
+    public var fullSpeedWhenUnconstrained: Bool
+    /// Whether the Mac has a network path, before asking Apple's ticket service.
+    public var network: NetworkPath
+    /// How long a notarization lookup may take before it counts as no answer. The panel
+    /// shows "Couldn't reach Apple" sooner (its own give-up); a later answer still counts
+    /// until this.
+    public var notarizationLookupTimeout: Duration
+    /// Asks Apple's ticket service by cdhash. Tests replace it with a scripted answer.
+    var lookUpTicket: @Sendable (_ cdhashes: [CDHash], _ timeout: Duration) async -> TicketAnswer = {
+        await Verifier.lookUpTicket(for: $0, timeout: $1)
+    }
+    /// Where the fast signer read writes its skeleton bundles (`SignerPeek`).
+    var peekRoot: URL = SignerPeek.defaultRoot
+    /// The fast signer read. Tests replace it to play a Developer ID signer, which no
+    /// fixture can carry (fixtures are never signed with a real identity).
+    var peek:
+        @Sendable (_ app: Entry, _ fileSystem: any FileSystem, _ dmgTicket: NotarizationTicket?, _ root: URL)
+            -> SignerPeek.Result? = { SignerPeek.read(app: $0, in: $1, dmgTicket: $2, root: $3) }
     /// Where hidden mounts go: `HiddenMount.defaultRoot` in the app; tests use their own,
     /// so a test sweep never touches the app's mounts.
     public var mountRoot: URL = HiddenMount.defaultRoot
@@ -66,8 +89,13 @@ public struct InstallOptions: Sendable {
         trash: @escaping @Sendable (URL) throws -> Void,
         mountFallback: (@Sendable (_ dmg: URL, _ reason: ReaderError) -> Void)? = nil,
         conditions: StagingConditions = .system, uncachedBackgroundWrites: Bool = false,
-        backgroundWriteRate: Int? = Extractor.defaultBackgroundWriteRate, reissuesVerificationOnBoost: Bool = true
+        backgroundWriteRate: Int? = Extractor.defaultBackgroundWriteRate, reissuesVerificationOnBoost: Bool = true,
+        fullSpeedWhenUnconstrained: Bool = false, network: NetworkPath = .system,
+        notarizationLookupTimeout: Duration = defaultNotarizationLookupTimeout
     ) {
+        self.fullSpeedWhenUnconstrained = fullSpeedWhenUnconstrained
+        self.network = network
+        self.notarizationLookupTimeout = notarizationLookupTimeout
         self.destination = destination
         self.stagingPriority = stagingPriority
         self.backgroundDecodePolicy = backgroundDecodePolicy
@@ -79,6 +107,12 @@ public struct InstallOptions: Sendable {
         self.backgroundWriteRate = backgroundWriteRate
         self.reissuesVerificationOnBoost = reissuesVerificationOnBoost
     }
+}
+
+extension InstallOptions {
+    /// `notarizationLookupTimeout`'s default: the app passes its own
+    /// (`Theme.Timing.notarizationLateAnswer`).
+    public static let defaultNotarizationLookupTimeout: Duration = .seconds(15)
 }
 
 /// One DMG on its way into the destination: reads it, asks for the licence when there is
@@ -109,9 +143,15 @@ public actor InstallSession {
     public private(set) var state: InstallState {
         get { published }
         set {
-            published = installedCopy.map { newValue.replacingUpdate($0) } ?? newValue
+            var value = installedCopy.map { newValue.replacingUpdate($0) } ?? newValue
+            if let earlyTrust { value = value.replacingSummary { earlyTrust.overlay(on: &$0) } }
+            published = value
             continuation.yield(published)
-            if published.isFinal { continuation.finish() }
+            if published.isFinal {
+                continuation.finish()
+                lookupTask?.cancel()
+                networkTask?.cancel()
+            }
         }
     }
     private var published: InstallState = .reading
@@ -174,6 +214,17 @@ public actor InstallSession {
     private var reissueVerification = false
     /// For tests: the QoS of every signature check started, in order.
     private(set) var verificationQoS: [DispatchQoS.QoSClass] = []
+    /// What the fast signer read found, laid over every published summary until the full
+    /// check has run (`EarlyTrust.overlay`).
+    private(set) var earlyTrust: EarlyTrust?
+    private var peekTask: Task<Void, Never>?
+    /// The notarization lookup in flight, and how many have started (`Notarization.asking`).
+    private var lookupTask: Task<Void, Never>?
+    private var lookupAttempt = 0
+    /// For tests: how many lookups reached `options.lookUpTicket`.
+    private(set) var lookupsStarted = 0
+    /// Waits for a network path to come back after "Couldn't reach Apple".
+    private var networkTask: Task<Void, Never>?
 
     public init(dmg: URL, options: InstallOptions) {
         self.dmg = dmg
@@ -249,6 +300,8 @@ public actor InstallSession {
         answerLicence(false)
         answerPassword(nil)
         runTask?.cancel()
+        lookupTask?.cancel()
+        networkTask?.cancel()
         await switchTask?.value
         await runTask?.value
         await installTask?.value
@@ -308,7 +361,8 @@ public actor InstallSession {
         } else {
             guard let bundleName = summary?.bundleName ?? early?.app.name else { return }
             let target = destination
-            let update = await Self.readInstalledCopy(in: target, bundleName: bundleName, verdict: verdict)
+            let update = await Self.readInstalledCopy(
+                in: target, bundleName: bundleName, verdict: verdict, earlySigning: earlyTrust?.signing)
             // A later change reads again, and a pipeline that settled meanwhile read this
             // destination itself, against the verdict.
             guard target == destination, !settled, !state.isFinal else { return }
@@ -350,7 +404,7 @@ public actor InstallSession {
     private func relocate(_ old: StagedApp, to target: URL) async -> Bool {
         let stop = stopFlag
         let expected = verdict?.signing?.cdhashes ?? []
-        let qos: QualityOfService = isFast ? .userInitiated : .utility
+        let qos: QualityOfService = runsFast ? .userInitiated : .utility
         let moved: StagedApp
         do {
             moved = try await Self.onThread(qos: qos) {
@@ -390,9 +444,11 @@ public actor InstallSession {
 
     /// The installed copy named `bundleName` in `destination`: nil when there is none,
     /// else its version and, once there is a `verdict`, whether the same developer signed it.
-    static func readInstalledCopy(in destination: URL, bundleName: String, verdict: Verdict?) async
-        -> AppSummary.Update?
-    {
+    /// Before the verdict, `earlySigning` (the fast signer read) answers the developer
+    /// question when it has a Team ID; the verdict's answer replaces it later.
+    static func readInstalledCopy(
+        in destination: URL, bundleName: String, verdict: Verdict?, earlySigning: SigningInfo? = nil
+    ) async -> AppSummary.Update? {
         let installed = destination.appending(path: bundleName, directoryHint: .isDirectory)
         return try? await onThread(qos: .userInitiated) { () -> AppSummary.Update? in
             var status = stat()
@@ -406,6 +462,10 @@ public actor InstallSession {
                     // The installed copy's signature couldn't be read: nothing to compare against.
                     update.developer = .installedUnsigned
                 }
+            } else if let earlySigning, earlySigning.teamID != nil,
+                let signing = try? Verifier.signingInfo(app: installed)
+            {
+                update.developer = Verifier.sameDeveloper(new: earlySigning, installed: signing)
             }
             return update
         } ?? nil
@@ -436,7 +496,7 @@ public actor InstallSession {
                 }
                 early = read
                 state = .needsLicence(licence, preview: read.map { AppPreview($0.summary) })
-                if !isFast { opened.image.udif?.decodePolicy = options.backgroundDecodePolicy }
+                if !runsFast { opened.image.udif?.decodePolicy = options.backgroundDecodePolicy }
                 if let read {
                     let size = try? await Self.onThread(qos: .utility) { try Self.size(of: read.app, in: fileSystem) }
                     if let size, case .needsLicence(let shown, var preview?) = state {
@@ -495,7 +555,7 @@ public actor InstallSession {
             }
             do {
                 let secret = password
-                mount = try await Self.onThread(qos: isFast ? .userInitiated : .utility) {
+                mount = try await Self.onThread(qos: runsFast ? .userInitiated : .utility) {
                     defer { secret?.wipe() }
                     return try HiddenMount.attach(image, password: secret, licenceAccepted: accepted, root: root)
                 }
@@ -539,6 +599,8 @@ public actor InstallSession {
     /// holds it. The first read is small and runs at user-initiated priority on the device's
     /// current policy; the size walk and everything after run at the background policy.
     private func identifyAndStage(_ app: Entry, from fileSystem: any FileSystem, udif: UDIFDevice?) async {
+        // Beside the name read, not after it: the signer then lands with the name or just after.
+        startPeek(app, in: fileSystem)
         let destination = self.destination
         var summary: AppSummary
         if let early, early.app.name == app.name, mount == nil {
@@ -566,7 +628,8 @@ public actor InstallSession {
             installRequested
             ? .installing(summary, InstallProgress(bytesDone: 0, bytesTotal: summary.size ?? 0))
             : .identified(summary)
-        if !isFast { udif?.decodePolicy = options.backgroundDecodePolicy }
+        if earlyTrust != nil { Task { await self.readEarlyDeveloper() } }
+        if !runsFast { udif?.decodePolicy = options.backgroundDecodePolicy }
         guard !stopFlag.isSet else { return finishCancelled() }
         await prepareAndStage(app, summary: summary, from: fileSystem, udif: udif)
     }
@@ -579,7 +642,7 @@ public actor InstallSession {
         let dmgURL = dmg
         let prepared: Prepared
         do {
-            prepared = try await Self.onThread(qos: isFast ? .userInitiated : .utility) {
+            prepared = try await Self.onThread(qos: runsFast ? .userInitiated : .utility) {
                 try Prepared.make(
                     app: app, summary: identified, fileSystem: fileSystem, destination: destination, dmg: dmgURL)
             }
@@ -624,7 +687,7 @@ public actor InstallSession {
         // sees the ticket. Best effort: a failure only means macOS fetches it online.
         if let ticket = prepared.ticket {
             let url = staged.url
-            _ = try? await Self.onThread(qos: isFast ? .userInitiated : .utility) {
+            _ = try? await Self.onThread(qos: runsFast ? .userInitiated : .utility) {
                 try Verifier.staple(ticket, into: url)
             }
         }
@@ -633,18 +696,27 @@ public actor InstallSession {
         timings.verified = elapsed()
         guard !stopFlag.isSet, !Task.isCancelled else { return finishCancelled() }
 
+        // The fast read is a few ms of work; it has finished long before a full check, but
+        // the comparison below must see it.
+        await peekTask?.value
         self.verdict = verdict
+        let decision = Self.decision(for: verdict, early: earlyTrust)
         summary.signer = verdict.signing?.organisation ?? verdict.signing?.signer
         summary.teamID = verdict.signing?.teamID
-        summary.isNotarized = verdict.assessment?.assessment?.isCheckedByApple == true
+        summary.notarization = Self.notarization(after: verdict, decision: decision, early: earlyTrust?.notarization)
+        summary.isNotarized =
+            verdict.assessment?.assessment?.isCheckedByApple == true || summary.notarization.isNotarized
+        summary.isSignatureChecked = true
         self.summary = summary
 
-        if options.skipFirstLaunchPrompt, verdict.allowsPreApproval {
+        if options.skipFirstLaunchPrompt, decision == .install, verdict.allowsPreApproval {
             // On failure the app keeps plain quarantine: macOS shows its usual prompt.
-            _ = try? await Self.onThread(qos: isFast ? .userInitiated : .utility) { try Extractor.markApproved(staged) }
+            _ = try? await Self.onThread(qos: runsFast ? .userInitiated : .utility) {
+                try Extractor.markApproved(staged)
+            }
         }
 
-        if case .refuse = verdict.decision {
+        if case .refuse = decision {
             self.staged = nil
             Extractor.discard(staged)
         }
@@ -653,7 +725,7 @@ public actor InstallSession {
         // and the installed copy is read there (`changeDestination`).
         guard await settleDestination(), let latest = self.summary else { return }
         summary = latest
-        switch verdict.decision {
+        switch decision {
         case .install:
             // Install already clicked: stay in `installing` rather than flash `ready`.
             if installRequested {
@@ -675,13 +747,157 @@ public actor InstallSession {
     /// to run at user-initiated priority from the start.
     private var isFast: Bool { installRequested || options.stagingPriority == .userInitiated }
 
+    /// `isFast`, or a session told to stage at full speed while nothing constrains it
+    /// (`InstallOptions.fullSpeedWhenUnconstrained`). Low Power Mode and heat still hold it
+    /// back through `applyConditions`, which only `isFast` overrides.
+    private var runsFast: Bool {
+        isFast || (options.fullSpeedWhenUnconstrained && !options.conditions.isConstrained())
+    }
+
+    /// What the session does with a verdict, given what the fast read showed.
+    ///
+    /// - The fast read and the full check name different signers (Team ID or organisation):
+    ///   the full check wins, and a signer that changed between two reads of the same image
+    ///   means the image changed under Drop, so it is refused as damaged.
+    /// - Developer ID, intact, but Gatekeeper couldn't be asked (offline, timed out): installs
+    ///   as normal, and the panel says "Couldn't reach Apple. macOS checks on first open."
+    ///   (replacing the amber warning, decided 2026-11-26), or "Notarized by Apple" when a
+    ///   ticket said so. Never for other signers, which can't be notarized at all.
+    static func decision(for verdict: Verdict, early: EarlyTrust?) -> Verdict.Decision {
+        if let early, let checked = verdict.signing, checked.hasSigner,
+            checked.teamID != early.signing.teamID || checked.organisation != early.signing.organisation
+        {
+            return .refuse(
+                .damaged(
+                    reason: "The signer read from the disk image isn't the staged copy's.",
+                    status: errSecCSSignatureFailed, path: nil))
+        }
+        if case .warn(.notarizationUnknown) = verdict.decision, verdict.signing?.kind == .developerID,
+            early?.notarization != .notFound
+        {
+            return .install
+        }
+        return verdict.decision
+    }
+
+    /// The notarization row once the full check has run: Gatekeeper's acceptance confirms
+    /// it; a ticket the fast read found still counts when Gatekeeper couldn't be asked.
+    static func notarization(after verdict: Verdict, decision: Verdict.Decision, early: Notarization?)
+        -> Notarization
+    {
+        if verdict.assessment?.assessment?.isCheckedByApple == true { return early == .stapled ? .stapled : .confirmed }
+        guard decision == .install else { return early == .unknown || early == nil ? .unknown : .notFound }
+        if let early, early.isNotarized { return early }
+        return .unreachable
+    }
+
+    // MARK: - The fast signer read and Apple's ticket service
+
+    /// Reads the signer straight from the image (`SignerPeek`) beside staging, and publishes
+    /// it as soon as it's in: "Signed by …" about 150 ms after the popup instead of after
+    /// the whole app is staged and checked.
+    private func startPeek(_ app: Entry, in fileSystem: any FileSystem) {
+        let dmg = self.dmg
+        let root = options.peekRoot
+        let peek = options.peek
+        peekTask = Task {
+            let result = try? await Self.onThread(qos: .userInitiated) { () -> SignerPeek.Result? in
+                let dmgTicket = (try? Verifier.ticket(fromDMG: dmg.path)) ?? nil
+                return peek(app, fileSystem, dmgTicket, root)
+            }
+            await self.applyPeek(result ?? nil)
+        }
+    }
+
+    private func applyPeek(_ result: SignerPeek.Result?) async {
+        guard let result, result.signing.hasSigner, !stopFlag.isSet, !state.isFinal, verdict == nil else { return }
+        timings.signerRead = elapsed()
+        let notarization: Notarization =
+            result.hasStapledTicket ? .stapled : result.signing.kind == .developerID ? .asking(attempt: 0) : .unknown
+        earlyTrust = EarlyTrust(signing: result.signing, notarization: notarization)
+        if case .asking = notarization { beginLookup() }
+        state = state
+        await readEarlyDeveloper()
+    }
+
+    /// "Same developer as the installed copy" from the fast read's Team ID, on updates. Runs
+    /// once both the fast read and the name read are in, whichever finishes last.
+    private func readEarlyDeveloper() async {
+        guard let signing = earlyTrust?.signing, signing.teamID != nil, summary?.update != nil,
+            let bundleName = summary?.bundleName
+        else { return }
+        let target = destination
+        let update = await Self.readInstalledCopy(
+            in: target, bundleName: bundleName, verdict: nil, earlySigning: signing)
+        guard target == destination, verdict == nil, !state.isFinal, !stopFlag.isSet else { return }
+        installedCopy = .some(update)
+        summary?.update = update
+        state = state
+    }
+
+    /// Asks Apple's ticket service for the fast read's cdhashes, or with no network path
+    /// says "Couldn't reach Apple" at once and waits for a path to come back.
+    private func beginLookup() {
+        guard var trust = earlyTrust, !stopFlag.isSet else { return }
+        lookupAttempt += 1
+        guard options.network.isSatisfied() else {
+            trust.notarization = .unreachable
+            earlyTrust = trust
+            watchNetwork()
+            return
+        }
+        trust.notarization = .asking(attempt: lookupAttempt)
+        earlyTrust = trust
+        let attempt = lookupAttempt
+        let hashes = trust.signing.cdhashes
+        let lookup = options.lookUpTicket
+        let timeout = options.notarizationLookupTimeout
+        lookupsStarted += 1
+        lookupTask = Task {
+            let answer = await lookup(hashes, timeout)
+            self.applyLookup(answer, attempt: attempt)
+        }
+    }
+
+    private func applyLookup(_ answer: TicketAnswer, attempt: Int) {
+        guard attempt == lookupAttempt, var trust = earlyTrust, !stopFlag.isSet, !Task.isCancelled else { return }
+        switch answer {
+        case .notarized: trust.notarization = .confirmed
+        case .notFound: trust.notarization = .notFound
+        case .unreachable:
+            trust.notarization = .unreachable
+            watchNetwork()
+        }
+        earlyTrust = trust
+        if !state.isFinal { state = state }
+    }
+
+    /// While the row says "Couldn't reach Apple", a network path coming back starts the
+    /// lookup again, with the same timing as the first.
+    private func watchNetwork() {
+        guard networkTask == nil else { return }
+        let changes = options.network.changes
+        networkTask = Task { [weak self] in
+            for await satisfied in changes() where satisfied {
+                guard let self else { return }
+                await self.networkReturned()
+            }
+        }
+    }
+
+    private func networkReturned() {
+        guard earlyTrust?.notarization == .unreachable, !state.isFinal, !stopFlag.isSet else { return }
+        beginLookup()
+        state = state
+    }
+
     /// Runs the signature check at the session's current priority. If Install boosts the
     /// session while a utility-QoS check runs, `install()` cancels it and this starts it
     /// again at user-initiated (measured faster than waiting: `impact-bench.md`, round 2).
     private func verifyBoostable(_ app: URL) async -> Verdict {
         let verify = options.verify
         while true {
-            let qos: DispatchQoS.QoSClass = isFast ? .userInitiated : .utility
+            let qos: DispatchQoS.QoSClass = runsFast ? .userInitiated : .utility
             let task = Task { await verify(app, qos) }
             verification = (task, qos)
             verificationQoS.append(qos)
@@ -792,14 +1008,17 @@ public actor InstallSession {
         quarantine: String?
     ) async throws -> StagedApp {
         self.device = device
-        let background = options.stagingPriority == .background && !job.isBoosted
+        let background =
+            options.stagingPriority == .background && !job.isBoosted && !options.fullSpeedWhenUnconstrained
         device?.decodePolicy = background ? options.backgroundDecodePolicy : .fast
         timings.stagingStarted = elapsed()
 
         let stop = stopFlag
         let throttle = ProgressThrottle(steps: Self.progressSteps)
         let stageOptions = StageOptions(
-            quarantine: quarantine, priority: options.stagingPriority, isCancelled: { stop.isSet }, job: job,
+            quarantine: quarantine,
+            priority: options.fullSpeedWhenUnconstrained ? .userInitiated : options.stagingPriority,
+            isCancelled: { stop.isSet }, job: job,
             onBoost: { device?.decodePolicy = .fast }, uncachedBackgroundWrites: options.uncachedBackgroundWrites,
             backgroundWriteRate: options.backgroundWriteRate)
         return try await Self.onThread(qos: background ? .background : .userInitiated) {
@@ -926,6 +1145,35 @@ public actor InstallSession {
     static func discard(_ area: StagingArea) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             Extractor.discard(area) { continuation.resume() }
+        }
+    }
+}
+
+/// The fast signer read's findings (`SignerPeek`) and what Apple's ticket service said.
+struct EarlyTrust: Sendable, Equatable {
+    var signing: SigningInfo
+    var notarization: Notarization
+
+    /// Fills in what the full check hasn't yet: the signer, Team ID and notarization from the
+    /// fast read. After the full check its answers stand, except that Apple's ticket service
+    /// may still turn "Couldn't reach Apple" into "Notarized by Apple" (or start asking again
+    /// once the network is back): Apple's answer counts whenever it comes.
+    func overlay(on summary: inout AppSummary) {
+        if !summary.isSignatureChecked {
+            summary.signer = signing.organisation ?? signing.signer
+            summary.teamID = signing.teamID
+            summary.notarization = notarization
+            summary.isNotarized = notarization.isNotarized
+        } else if summary.notarization == .unreachable || summary.notarization.isAsking {
+            switch notarization {
+            case .confirmed:
+                summary.notarization = .confirmed
+                summary.isNotarized = true
+            case .asking:
+                summary.notarization = notarization
+            case .unreachable, .notFound, .unknown, .stapled:
+                summary.notarization = .unreachable
+            }
         }
     }
 }

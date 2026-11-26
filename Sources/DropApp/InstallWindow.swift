@@ -10,7 +10,7 @@ import SwiftUI
 /// states as the popup.
 ///
 /// ```
-/// media 96 · title 22 · meta 13 · details card · options card · actions (240 × 38 stack)
+/// media 96 · title 22 · meta 13 · details card · actions (240 × 38 stack)
 /// ```
 ///
 /// While installing, the Install capsule itself fills as the progress (Progress board), so
@@ -75,14 +75,23 @@ struct InstallWindowView: View {
             .font(Theme.Font.body)
             .foregroundStyle(Theme.Colour.secondaryText)
             .padding(.top, Theme.InstallWindow.titleToMeta)
-            VStack(spacing: Theme.InstallWindow.detailsToOptions) {
-                details.transition(.opacity)
-                if hasOptions { options.transition(.opacity) }
-            }
-            .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: detailsKey)
-            .padding(.top, Theme.InstallWindow.metaToDetails)
+            details.transition(.opacity)
+                .animation(reduceMotion ? Theme.Motion.fade : Theme.Motion.swap, value: detailsKey)
+                .padding(.top, Theme.InstallWindow.metaToDetails)
             actionsSlot
                 .padding(.top, Theme.InstallWindow.optionsToActions)
+        }
+        // The "Couldn't reach Apple" info button is drawn here, after the actions, so it
+        // comes last in the Tab order (Install, Not now, Open disk image, More info) while
+        // sitting in the details card's row.
+        .overlayPreferenceValue(MoreInfoAnchor.self) { anchor in
+            GeometryReader { proxy in
+                if let anchor {
+                    let frame = proxy[anchor]
+                    MoreInfoButton(text: InstallDetailsCard.unreachableHelp)
+                        .position(x: frame.midX, y: frame.midY)
+                }
+            }
         }
     }
 
@@ -156,25 +165,6 @@ struct InstallWindowView: View {
         case .ready, .working, .done: "flow"
         default: "\(phase)"
         }
-    }
-
-    // MARK: Options
-
-    private var hasOptions: Bool { [.ready, .working, .done, .warning].contains(phase) }
-
-    /// Install to and the Trash switch. Each row dims in place as one, label and control
-    /// (`Theme.Control.disabledOpacity`), once it can no longer change anything: while
-    /// installing and after.
-    private var options: some View {
-        RowCard {
-            SettingsRow("Install to") {
-                NidusSelect(
-                    label: "Install to", selection: model.location, options: InstallLocation.selectOptions
-                ) { model.send(.changeLocation($0)) }
-            }
-            SwitchRow(title: "Move the disk image to the Trash", isOn: $model.trashImage)
-        }
-        .disabled(!model.buttons.controlsEnabled || phase == .done)
     }
 
     // MARK: Actions
@@ -299,42 +289,65 @@ private struct InstallWindowMedia: View {
     }
 }
 
-/// Made by, Checked by Apple and From, 24 apart. The first two wait with a spinner while
-/// the check runs, and swap in with the status blur when it ends.
+/// Made by, Checked by Apple and From, 24 apart. Made by fills as soon as the fast signer
+/// read names the developer; Checked by Apple follows `NotarizationRow` like the popup's
+/// row, with "Couldn't reach Apple" and the rest behind an info button. Each value
+/// blur-swaps when it changes.
 private struct InstallDetailsCard: View {
     let model: PanelModel
 
+    /// The rest of the popup's line, behind the window's info button (longer text behind ⓘ).
+    static let unreachableHelp = "macOS checks on first open."
+
     var body: some View {
         InfoCard(spacing: 0) {
-            row("Made by") {
+            row("Made by", key: model.isChecking) {
                 if model.isChecking {
-                    waiting
+                    waiting("Checking\u{2026}")
                 } else if let signer = model.summary?.signer {
                     checked(signer)
                 } else {
                     Text("Not signed").foregroundStyle(Theme.Colour.secondaryText)
                 }
             }
-            row("Checked by Apple") {
+            row("Checked by Apple", key: notarizedKey) {
                 if model.isChecking {
-                    waiting
-                } else if model.summary?.isNotarized == true {
-                    checked("Notarized")
+                    waiting("Checking\u{2026}")
                 } else {
-                    Text("Not notarized").foregroundStyle(Theme.Colour.secondaryText)
+                    switch model.notarizationRow {
+                    case .notarized: checked("Notarized")
+                    case .checkingWithApple, .checkingSignature: waiting("Checking\u{2026}")
+                    case .unreachable:
+                        HStack(spacing: Theme.InstallWindow.detailIconGap) {
+                            Text("Couldn't reach Apple").foregroundStyle(Theme.Colour.secondaryText)
+                            // The button itself is drawn after the actions (`MoreInfoAnchor`).
+                            Color.clear
+                                .frame(width: Theme.InstallWindow.detailIcon, height: Theme.InstallWindow.detailIcon)
+                                .anchorPreference(key: MoreInfoAnchor.self, value: .bounds) { $0 }
+                        }
+                    case .reserved: Color.clear.frame(height: 0)
+                    case nil:
+                        Text(model.summary?.isNotarized == true ? "Notarized" : "Not notarized")
+                            .foregroundStyle(Theme.Colour.secondaryText)
+                    }
                 }
             }
-            row("From") {
+            row("From", key: 0) {
                 Text(model.dmg.lastPathComponent).lineLimit(1).truncationMode(.middle)
             }
         }
+        .onChange(of: model.notarizationRow) { _, row in SignerCard.announce(row) }
     }
 
-    private func row<Value: View>(_ label: String, @ViewBuilder value: () -> Value) -> some View {
+    private var notarizedKey: String { model.isChecking ? "checking" : "\(String(describing: model.notarizationRow))" }
+
+    private func row<Value: View, Key: Hashable>(_ label: String, key: Key, @ViewBuilder value: () -> Value)
+        -> some View
+    {
         HStack(spacing: Theme.Row.labelControlGap) {
             Text(label).foregroundStyle(Theme.Colour.secondaryText)
             Spacer(minLength: 0)
-            StatusSwap(key: model.isChecking) { value() }
+            StatusSwap(key: key) { value() }
         }
         .font(Theme.Font.body)
         .frame(height: Theme.InstallWindow.detailRow)
@@ -350,10 +363,44 @@ private struct InstallDetailsCard: View {
         }
     }
 
-    private var waiting: some View {
+    private func waiting(_ text: String) -> some View {
         HStack(spacing: Theme.InstallWindow.detailIconGap) {
             ProgressView().controlSize(.mini)
-            Text("Checking\u{2026}").foregroundStyle(Theme.Colour.secondaryText)
+            Text(text).foregroundStyle(Theme.Colour.secondaryText)
+        }
+    }
+}
+
+/// Where the window's "Couldn't reach Apple" info button goes: the slot its row leaves.
+private struct MoreInfoAnchor: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
+    }
+}
+
+/// The ⓘ button named More info: Space or Return opens its popover, Esc or a click away
+/// closes it and focus stays on the button. The same piece as Settings' skip-prompt ⓘ.
+private struct MoreInfoButton: View {
+    let text: String
+    @State private var isShown = false
+
+    var body: some View {
+        Button {
+            isShown.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.system(size: Theme.InstallWindow.detailIcon, weight: .semibold))
+                .foregroundStyle(Theme.Colour.secondaryText)
+        }
+        .buttonStyle(.nidusPlain)
+        .accessibilityLabel("More info")
+        .accessibilityHint(text)
+        .popover(isPresented: $isShown, arrowEdge: .bottom) {
+            Text(text)
+                .font(Theme.Font.small)
+                .fixedSize()
+                .padding(Theme.Space.l)
         }
     }
 }

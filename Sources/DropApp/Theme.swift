@@ -681,6 +681,17 @@ enum Theme {
         static let quitTimeout: Duration = .seconds(30)
         /// While the pointer rests on board 3, how often it looks whether it has left.
         static let hoverRecheck: Duration = .milliseconds(500)
+        /// Ready on arrival: with no stapled ticket, how long the notarized row stays empty
+        /// (its space kept) while Apple's ticket service answers, before the WaitingRow
+        /// "Checking with Apple…". A fast answer swaps "Notarized by Apple" straight in, so a
+        /// good connection never sees a spinner flicker. Decided by Jatin, 2026-11-26.
+        static let notarizationCheckingDelay: Duration = .milliseconds(400)
+        /// With no answer by now the row says "Couldn't reach Apple. macOS checks on first
+        /// open." The lookup itself carries on until `notarizationLateAnswer`.
+        static let notarizationGiveUp: Duration = .seconds(3)
+        /// How long, from the start, a lookup may still answer: a "notarized" that comes after
+        /// the give-up still swaps the line to "Notarized by Apple". Decided by Jatin, 2026-11-26.
+        static let notarizationLateAnswer: Duration = .seconds(15)
     }
 }
 

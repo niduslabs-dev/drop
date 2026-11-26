@@ -21,8 +21,6 @@ final class InstallController {
     private var current: PanelModel?
     private var session: InstallSession?
     private var updatesTask: Task<Void, Never>?
-    /// The current session's destination changes, in order; Install waits for them.
-    private var switchTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     /// Images attached for Open Installer; kept until Installer quits or Drop does.
     private var installerMounts: [HiddenMount] = []
@@ -122,7 +120,11 @@ final class InstallController {
             trash: { url in _ = try Self.trash(url, into: trashFolder) },
             mountFallback: { dmg, reason in
                 Log.app.info("Hidden mount for \(dmg.lastPathComponent, privacy: .public): \(reason, privacy: .public)")
-            })
+            },
+            // Ready on arrival: stage at full speed while the panel is up, so the full check
+            // usually ends before Install; Low Power Mode and heat still wait.
+            fullSpeedWhenUnconstrained: true,
+            notarizationLookupTimeout: Theme.Timing.notarizationLateAnswer)
         let session = InstallSession(dmg: model.dmg, options: options)
         self.session = session
         updatesTask = Task { [weak self] in
@@ -254,7 +256,6 @@ final class InstallController {
             model.password = ""
             guard !password.isEmpty else { return }
             Task { await session?.providePassword(password) }
-        case .changeLocation(let location): changeLocation(model, to: location)
         case .checkForUpdates:
             finish(model)
             updateCheck.run()
@@ -264,13 +265,7 @@ final class InstallController {
     /// Install, Update, or Quit and Update: one press runs to installed (`QuitThenInstall`).
     private func install(_ model: PanelModel) {
         guard let session, !model.isBusy, !model.isQuitting else { return }
-        model.isBusy = true
-        let pendingSwitch = switchTask
         Task {
-            // A location change in flight finishes first, so the running-copy check and the
-            // install both see the new destination.
-            await pendingSwitch?.value
-            model.isBusy = false
             guard current === model else { return }
             var running: NSRunningApplication?
             if let summary = model.summary, summary.update != nil, let bundleID = summary.bundleIdentifier {
@@ -394,28 +389,6 @@ final class InstallController {
         return target
     }
 
-    /// Points the running session at the new folder (`InstallSession.changeDestination`):
-    /// the staged copy, its check and an accepted licence carry over, and the panel switches
-    /// between a new install and an update from the session's next state.
-    private func changeLocation(_ model: PanelModel, to location: InstallLocation) {
-        guard location != model.location, let session else { return }
-        model.location = location
-        model.destinationName = destinationName(for: location)
-        let destination = preparedDestination(for: location)
-        let previous = switchTask
-        switchTask = Task { [weak self] in
-            await previous?.value
-            await session.changeDestination(destination)
-            if let took = await session.lastDestinationChange {
-                Log.app.info(
-                    "location switch to \(destination.path, privacy: .public) took \(took.milliseconds, privacy: .public) ms"
-                )
-            }
-            guard let self, self.session === session else { return }
-            self.refreshRunningApp(for: model)
-        }
-    }
-
     /// Not now, Disagree, Cancel, Don't Install: deletes the staged copy, remembers the file.
     private func dismiss(_ model: PanelModel) {
         let session = session
@@ -431,7 +404,6 @@ final class InstallController {
         if let session, !model.state.isFinal { Task { await session.cancel() } }
         updatesTask?.cancel()
         updatesTask = nil
-        switchTask = nil
         session = nil
         current = nil
         panel.close()
@@ -539,12 +511,5 @@ final class InstallController {
 extension InstallState {
     var isLicence: Bool {
         if case .needsLicence = self { true } else { false }
-    }
-}
-
-extension Duration {
-    /// Milliseconds, for logs.
-    fileprivate var milliseconds: Double {
-        Double(components.seconds) * 1_000 + Double(components.attoseconds) / 1e15
     }
 }

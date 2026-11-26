@@ -19,10 +19,15 @@
     /// states window-licence, window-licence-one, window-installing, window-done,
     /// window-warning, window-refused and window-update, and onboarding
     /// pages onboarding-1 to onboarding-5 and onboarding-2-denied (fakes, so no request
-    /// reaches macOS; closing the window quits). `select-settings`, `select-main` (the
-    /// popup) and `select-window` open that surface's Install to menu, plain, with `-hover`
-    /// (the pointer's highlight on the second row) or `-key` (Down pressed once); they also
-    /// print `DEMO_MENU <id>` and both frames for measuring. `open-after` (the popup) and
+    /// reaches macOS; closing the window quits). `select-settings` opens Settings' Install
+    /// apps to menu, plain, with `-hover` (the pointer's highlight on the second row) or
+    /// `-key` (Down pressed once); it also prints `DEMO_MENU <id>` and both frames for
+    /// measuring. Ready on arrival (each also as `window-…`): `arriving` (the fast read's
+    /// signer and a stapled ticket while staging), `checking-apple` (no answer after the
+    /// delay), `apple-offline` (the grey line), `early-install` (Install pressed during the
+    /// check), `arriving-update` (Same developer from the fast read), and `late-warning` and
+    /// `late-refused`, which show `arriving` or `early-install`, then blur-swap to the warning
+    /// or damaged board when the full check disagrees (`DEMO_STEP late`), and report after. `open-after` (the popup) and
     /// `window-open-after` play ready, working, done, then the close before the app opens
     /// ("Open the app when it's installed"), with an opener that opens nothing; `-fail`
     /// makes it fail, so Installed comes back. They print `DEMO_STEP <name> <frame> visible|hidden`
@@ -49,7 +54,10 @@
                 "window-refused", "window-update", "onboarding-1",
                 "onboarding-2", "onboarding-2-denied", "onboarding-3",
                 "onboarding-4", "onboarding-5", "select-settings", "select-settings-hover", "select-settings-key",
-                "select-main", "select-main-hover", "select-window", "select-window-key", "update-ready",
+                "arriving", "checking-apple", "apple-offline", "early-install", "arriving-update", "late-warning",
+                "late-refused", "window-arriving", "window-checking-apple", "window-apple-offline",
+                "window-early-install", "window-arriving-update", "window-late-warning", "window-late-refused",
+                "update-ready",
                 "update-available", "update-ready-plain", "settings-update", "settings-update-idle",
                 "settings-update-bottom", "settings-update-idle-bottom", "open-after", "open-after-fail",
                 "window-open-after", "window-open-after-fail", "update-flow", "update-flow-timeout",
@@ -94,6 +102,10 @@
             }
             if state.hasSuffix("size-lands") {
                 runSizeLands(state, app: app)
+                return
+            }
+            if state.hasSuffix("late-warning") || state.hasSuffix("late-refused") {
+                runLateFailure(state, app: app)
                 return
             }
             if state == "roll-soak" {
@@ -250,27 +262,46 @@
 
         private static let rollStep: Duration = .milliseconds(250)
 
-        /// Opens a surface's Install to select through `SelectDemo`, never a click.
+        /// The full check landing after the fast read looked fine: the surface shows the
+        /// arriving state (or Install pressed early), then blur-swaps to the warning or
+        /// damaged board. Reports the window once the swap has settled.
+        private static func runLateFailure(_ state: String, app: AppDelegate) {
+            let opened = state.hasPrefix("window")
+            let refused = state.hasSuffix("refused")
+            let prefix = opened ? "window-" : ""
+            let model = makeModel(prefix + (refused ? "early-install" : "arriving"))
+            model.send = { action in
+                if [.close, .notNow].contains(action) { NSApp.terminate(nil) }
+            }
+            Task {
+                app.panel.show(model)
+                try? await Task.sleep(for: settle)
+                guard var summary = model.summary else { return }
+                summary.isSignatureChecked = true
+                summary.isNotarized = false
+                summary.notarization = .notFound
+                model.state =
+                    refused
+                    ? .refused(
+                        summary,
+                        .damaged(
+                            reason: "The signer read from the disk image isn't the staged copy's.", status: -67_061,
+                            path: nil))
+                    : .warning(summary, .notNotarized)
+                print("DEMO_STEP late")
+                fflush(stdout)
+                try? await Task.sleep(for: settle)
+                report(app.panel.windowNumber)
+            }
+        }
+
+        /// Opens Settings' Install apps to select through `SelectDemo`, never a click.
         private static func runSelect(_ state: String, app: AppDelegate) {
             let parts = state.split(separator: "-").map(String.init)
-            let surface = parts.count > 1 ? parts[1] : "settings"
             let mode = parts.count > 2 ? parts[2] : ""
-            let label: String
-            let window: () -> Int
-            switch surface {
-            case "main", "window":
-                label = "Install to"
-                let model = makeModel(surface)
-                model.send = { action in
-                    if action == .close || action == .notNow { NSApp.terminate(nil) }
-                }
-                app.panel.show(model)
-                window = { app.panel.windowNumber }
-            default:
-                label = "Install apps to"
-                app.settings.show()
-                window = { app.settings.windowNumber ?? 0 }
-            }
+            let label = "Install apps to"
+            app.settings.show()
+            let window = { app.settings.windowNumber ?? 0 }
             Task {
                 try? await Task.sleep(for: settle)
                 guard let menu = SelectDemo.openers[label]?(mode == "key") else {
@@ -544,6 +575,23 @@
                 model.state = .preparing(early, InstallProgress(bytesDone: 30 * megabyte, bytesTotal: 84 * megabyte))
             case "waiting":
                 model.state = .waitingToPrepare(linea)
+            case "arriving", "checking-apple", "apple-offline", "early-install", "arriving-update":
+                // The fast read's answer while staging runs: signed, and notarization from a
+                // stapled ticket, still asking Apple, or Apple unreachable.
+                var early = linea
+                early.isNotarized = state == "arriving" || state == "early-install" || state == "arriving-update"
+                early.notarization =
+                    switch state {
+                    case "checking-apple": .asking(attempt: 1)
+                    case "apple-offline": .unreachable
+                    default: .stapled
+                    }
+                if state == "arriving-update" {
+                    early.update = .init(installedVersion: "2.3.0", developer: .same(teamID: "ABCDE12345"))
+                }
+                let progress = InstallProgress(bytesDone: 30 * megabyte, bytesTotal: 84 * megabyte)
+                model.state = state == "early-install" ? .installing(early, progress) : .preparing(early, progress)
+                if state == "checking-apple" { model.notarizationClock.set(.afterCheckingDelay) }
             case "installing":
                 model.state = .installing(linea, InstallProgress(bytesDone: 44 * megabyte, bytesTotal: 84 * megabyte))
             case "progress-30", "progress-62":

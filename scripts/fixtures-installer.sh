@@ -8,6 +8,9 @@
 #   pkg-only.dmg    a stand-in "Tiny Installer.pkg" file and no app
 #   two-apps.dmg    AdHoc.app and Unsigned.app side by side
 #   no-app.dmg      only a text file
+#   apple-signed.dmg  a copy of /System/Applications/Stickies.app as "Stickies.app": a real
+#                     certificate signature (Apple's own) for the fast signer read
+#   unsigned.dmg    Unsigned.app as "Tiny.app": no signature at all
 set -euo pipefail
 . "$(dirname "$0")/lib/hdi.sh"
 
@@ -43,6 +46,14 @@ make_dmg two-apps "$src"
 src="$OUT/src/no-app"; mkdir -p "$src"
 printf 'hello\n' >"$src/readme.txt"
 make_dmg no-app "$src"
+
+src="$OUT/src/apple-signed"; mkdir -p "$src"
+cp -R /System/Applications/Stickies.app "$src/Stickies.app"
+make_dmg apple-signed "$src"
+
+src="$OUT/src/unsigned"; mkdir -p "$src"
+ditto "$SYN/Unsigned.app" "$src/Tiny.app"
+make_dmg unsigned "$src"
 
 rm -rf "$OUT/src"
 ls -l "$OUT"

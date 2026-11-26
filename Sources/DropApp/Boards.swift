@@ -138,20 +138,8 @@ struct MainBoard: View {
                         .offset(x: Theme.Icon.badgeOffset, y: Theme.Icon.badgeOffset)
                 }
             }
+            // Install to and the Trash switch live in Settings only (Ready on arrival boards).
             SignerCard(model: model)
-            VStack(alignment: .leading, spacing: Theme.Settings.rowSpacing) {
-                HStack(spacing: Theme.Card.calloutSpacing) {
-                    Text("Install to").foregroundStyle(Theme.Colour.bodyText).dimsWhenDisabled()
-                    Spacer()
-                    NidusSelect(
-                        label: "Install to", selection: model.location, options: InstallLocation.selectOptions
-                    ) { model.send(.changeLocation($0)) }
-                }
-                Toggle("Move the disk image to the Trash", isOn: $model.trashImage)
-                    .toggleStyle(.nidusSwitch)
-            }
-            .font(Theme.Font.body)
-            .disabled(!model.buttons.controlsEnabled)
             FlowButtonRow(model: model)
                 .padding(.top, Theme.Panel.buttonRowTopPadding)
         }
@@ -180,46 +168,70 @@ struct MainBoard: View {
     }
 }
 
-/// "Signed by … / Notarized by Apple", or the check still running; the two swap with the
-/// status blur when the check finishes.
+/// "Signed by …" and the notarized row (Ready on arrival boards). The signer shows as soon
+/// as the fast read names it, about 150 ms in; the notarized row follows `NotarizationRow`:
+/// a ticket or Apple's answer swaps "Notarized by Apple" in, a slow answer shows "Checking
+/// with Apple…" first, and no answer the grey "Couldn't reach Apple" line. Until any signer
+/// is known the card waits with "Checking the signature…", keeping the height of the usual
+/// result so the panel doesn't grow when it lands.
 struct SignerCard: View {
     let model: PanelModel
 
+    /// The popup shows the whole line, so its icon is a status glyph, not a button.
+    static let unreachableText = "Couldn't reach Apple. macOS checks on first open."
+
     var body: some View {
         InfoCard {
-            // While checking, the card keeps the height of the usual result (signed and
-            // notarized), so the panel doesn't grow when it lands.
             ZStack(alignment: .topLeading) {
                 if model.isChecking { reservedRows.hidden().accessibilityHidden(true) }
-                checkSwap
+                StatusSwap(key: model.isChecking) {
+                    if model.isChecking {
+                        WaitingRow(text: waitingText)
+                    } else {
+                        VStack(alignment: .leading, spacing: Theme.Card.rowSpacing) {
+                            if let signer = model.summary?.signer {
+                                CardRow(
+                                    symbol: "checkmark.shield", colour: Theme.Colour.good,
+                                    text: Text("Signed by ") + Text(signer).fontWeight(.semibold))
+                            }
+                            notarizedRow
+                        }
+                    }
+                }
             }
         }
+        .onChange(of: model.notarizationRow) { _, row in Self.announce(row) }
     }
 
     private var reservedRows: some View {
         VStack(alignment: .leading, spacing: Theme.Card.rowSpacing) {
             CardRow(symbol: "checkmark.shield", colour: Theme.Colour.good, text: Text("Signed by"))
-            CardRow(symbol: "checkmark.circle", colour: Theme.Colour.good, text: Text("Notarized by Apple"))
+            reservedRow
         }
     }
 
-    private var checkSwap: some View {
-        Group {
-            StatusSwap(key: model.isChecking) {
-                if model.isChecking {
-                    WaitingRow(text: waitingText)
-                } else {
-                    VStack(alignment: .leading, spacing: Theme.Card.rowSpacing) {
-                        if let signer = model.summary?.signer {
-                            CardRow(
-                                symbol: "checkmark.shield", colour: Theme.Colour.good,
-                                text: Text("Signed by ") + Text(signer).fontWeight(.semibold))
-                        }
-                        if model.summary?.isNotarized == true {
-                            CardRow(
-                                symbol: "checkmark.circle", colour: Theme.Colour.good, text: Text("Notarized by Apple"))
-                        }
-                    }
+    private var reservedRow: some View {
+        CardRow(symbol: "checkmark.circle", colour: Theme.Colour.good, text: Text("Notarized by Apple"))
+    }
+
+    /// The row keeps one line's height from the start, so nothing moves when it fills.
+    private var notarizedRow: some View {
+        ZStack(alignment: .topLeading) {
+            reservedRow.hidden().accessibilityHidden(true)
+            StatusSwap(key: model.notarizationRow) {
+                switch model.notarizationRow {
+                case .notarized:
+                    reservedRow
+                case .checkingWithApple:
+                    WaitingRow(text: "Checking with Apple\u{2026}")
+                case .checkingSignature:
+                    WaitingRow(text: "Checking the signature\u{2026}")
+                case .unreachable:
+                    CardRow(
+                        symbol: "info.circle",
+                        text: Text(Self.unreachableText).foregroundStyle(Theme.Colour.secondaryText))
+                case .reserved, nil:
+                    Color.clear.frame(height: 0)
                 }
             }
         }
@@ -231,6 +243,18 @@ struct SignerCard: View {
         case .reading: "Reading the disk image\u{2026}"
         default: "Checking the signature\u{2026}"
         }
+    }
+
+    /// VoiceOver hears the row once, when it lands; "Checking with Apple…" isn't announced,
+    /// so a normal answer makes one announcement.
+    static func announce(_ row: NotarizationRow?) {
+        let text: String? =
+            switch row {
+            case .notarized: "Notarized by Apple"
+            case .unreachable: unreachableText
+            default: nil
+            }
+        if let text { AccessibilityNotification.Announcement(text).post() }
     }
 }
 

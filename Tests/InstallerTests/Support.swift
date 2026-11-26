@@ -78,6 +78,10 @@ struct Scratch {
             destination: destination, backgroundDecodePolicy: policy.policy, skipFirstLaunchPrompt: skipPrompt,
             trash: trashItem, mountFallback: hook, conditions: .unconstrained)
         options.mountRoot = mountRoot
+        // Tests never reach Apple's ticket service: offline unless a test scripts it.
+        options.network = .alwaysSatisfied
+        options.lookUpTicket = { _, _ in .notFound }
+        options.peekRoot = root.appending(path: "peek", directoryHint: .isDirectory)
         return options
     }
 

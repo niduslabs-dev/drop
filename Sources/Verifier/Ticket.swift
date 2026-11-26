@@ -95,8 +95,9 @@ extension Verifier {
     /// KeePassXC's (stapled, not signed) and after the code directory, requirements and CMS
     /// slots in Clipy's (signed and stapled).
     static let ticketSlot: UInt32 = 0x10002
-    /// Code signatures of DMGs are a few KB; anything far larger is not a signature.
-    static let maxSignatureSize: UInt64 = 16 * 1024 * 1024
+    /// Code signatures (of DMGs and of executables) are KB to a few MB; anything far larger is
+    /// not a signature.
+    public static let maxSignatureSize: UInt64 = 16 * 1024 * 1024
 
     private static let blobHeaderSize = 8
     private static let indexEntrySize = 8
